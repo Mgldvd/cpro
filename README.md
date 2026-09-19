@@ -58,17 +58,30 @@ terminal on an interval — the bar recolors itself as it climbs:
 
 ![Usage bar climbing through its color thresholds, then the accent color changing](.images/cpro-watch.svg)
 
+Every field on that card, explained:
+
+![Annotated cpro status/watch card](.images/cpro-watch-annotated.png)
+
 ### Make it yours
 
-cpro's UI is genuinely configurable, not decoration you can't touch:
+cpro's UI is genuinely configurable, not decoration you can't touch.
 
-- `cpro config accent COLOR` — the overall accent/border color
-- `cpro config bar|warning-color|danger-color COLOR` — the usage bar's own
-  color at each threshold
-- `cpro config theme NAME` — swap the border style (Minimal, Rounded, Heavy,
-  Double) — this one's genuinely fun to play with
-- `cpro config mask on` — replace every email cpro shows with a random
-  placeholder, so you can stream or demo without revealing your real accounts
+**Accent, usage bar, warning, and danger colors** —
+`cpro config accent|bar|warning-color|danger-color COLOR`, all from the same
+palette:
+
+![ACCENT COLOR picker](.images/cpro-root-menu-config-color.svg)
+
+**Theme** — `cpro config theme NAME` swaps the border style (Minimal,
+Rounded, Heavy, Double) — this one's genuinely fun to play with:
+
+![THEME picker](.images/cpro-root-menu-config-theme-picker.svg)
+
+**Mask emails** — `cpro config mask on` replaces every email cpro shows with
+a random placeholder, so you can stream or demo without revealing your real
+accounts:
+
+![CONFIG menu, Mask emails row](.images/cpro-root-menu-config-mask.svg)
 
 ## Documentation
 
