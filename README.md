@@ -21,7 +21,7 @@ waiting for a reset.
 
 That's the whole flow — no flags to memorize for everyday use:
 
-![Picking run, an account, YOLO mode, and launching claude](.images/cpro-header.svg)
+![Picking run, an account, YOLO mode, and launching claude](.images/cpro-header.gif)
 
 ## Install
 
