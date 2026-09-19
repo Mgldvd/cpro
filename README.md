@@ -1,7 +1,7 @@
 # cpro
 
 **cpro** — short for **C**laude Code **Pro** — is a Linux CLI that manages
-multiple Claude Code accounts by email. Each account keeps its own isolated
+multiple Claude Code accounts. Each account keeps its own isolated
 authentication, settings, and history.
 
 It exists because the \$100/month Max plan isn't in everyone's budget, but
