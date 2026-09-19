@@ -8,6 +8,16 @@ settings, and history.
 
 ## Install
 
+Download the latest release binary — no Go toolchain needed:
+
+```bash
+curl -LO https://github.com/Mgldvd/cpro/releases/latest/download/cpro-linux-amd64  # or cpro-linux-arm64
+chmod +x cpro-linux-amd64
+./cpro-linux-amd64 install    # copies itself to ~/.local/bin/cpro
+```
+
+Or build from source (requires Go 1.25.8+):
+
 ```bash
 go build -o bin/cpro ./src   # build
 go install ./src             # install to $(go env GOPATH)/bin

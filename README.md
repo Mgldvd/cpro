@@ -8,7 +8,17 @@ authentication, settings, and history.
 
 ## Install
 
-Requirements: Linux, Go 1.25.8+, and `claude` on `PATH`.
+Requirements: Linux, and `claude` on `PATH`.
+
+Download the latest release binary — no Go toolchain needed:
+
+```bash
+curl -LO https://github.com/Mgldvd/cpro/releases/latest/download/cpro-linux-amd64  # or cpro-linux-arm64
+chmod +x cpro-linux-amd64
+./cpro-linux-amd64 install    # copies itself to ~/.local/bin/cpro
+```
+
+Or build from source (requires Go 1.25.8+):
 
 ```bash
 go build -o bin/cpro ./src   # build
