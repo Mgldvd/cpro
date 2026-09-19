@@ -4,8 +4,8 @@
 multiple Claude Code accounts by email. Each account keeps its own isolated
 authentication, settings, and history.
 
-It exists because the $100/month Max plan isn't in everyone's budget, but two
-$20/month Pro subscriptions might be. cpro lets you switch between accounts
+It exists because the \$100/month Max plan isn't in everyone's budget, but
+two \$20/month Pro subscriptions might be. cpro lets you switch between accounts
 in seconds instead of juggling manual logins — and when one account hits its
 usage limit mid-conversation, `cpro session continue` picks up that exact
 same conversation under a different account, so you keep working instead of
