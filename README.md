@@ -49,6 +49,27 @@ cpro login you@example.com
 cpro                         # interactive launcher: run / status / watch / menu
 ```
 
+## Cool stuff you can do
+
+### Watch your usage live
+
+`cpro watch` redraws every account's Session/Week usage right in your
+terminal on an interval — the bar recolors itself as it climbs:
+
+![Usage bar climbing through its color thresholds, then the accent color changing](.images/cpro-watch.svg)
+
+### Make it yours
+
+cpro's UI is genuinely configurable, not decoration you can't touch:
+
+- `cpro config accent COLOR` — the overall accent/border color
+- `cpro config bar|warning-color|danger-color COLOR` — the usage bar's own
+  color at each threshold
+- `cpro config theme NAME` — swap the border style (Minimal, Rounded, Heavy,
+  Double) — this one's genuinely fun to play with
+- `cpro config mask on` — replace every email cpro shows with a random
+  placeholder, so you can stream or demo without revealing your real accounts
+
 ## Documentation
 
 See [`docs/README.md`](docs/README.md) for every command and what it's for.
