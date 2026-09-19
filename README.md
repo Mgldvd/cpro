@@ -51,6 +51,27 @@ cpro                         # interactive launcher: run / status / watch / menu
 
 ## Cool stuff you can do
 
+### Run two (or more) accounts at once
+
+Every account keeps fully isolated login, settings, and history — nothing
+stops you from running one in each terminal, or switching whenever you want:
+
+![RUN ACCOUNT picker](.images/cpro-root-run-account.svg)
+
+### Hit a limit? Keep going on another account
+
+`cpro session continue` copies your exact conversation to a different
+account and resumes it there — no lost context, no starting over:
+
+![DESTINATION ACCOUNT picker](.images/cpro-root-menu-session-continue-account.svg)
+
+### Already logged in with the system `claude`? Bring it into cpro
+
+`cpro system import` pulls the system `claude`'s credentials straight into a
+cpro-managed account, so you don't have to log in twice:
+
+![SYSTEM submenu](.images/cpro-root-menu-system-submenu.svg)
+
 ### Watch your usage live
 
 `cpro watch` redraws every account's Session/Week usage right in your
