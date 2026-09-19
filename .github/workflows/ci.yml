@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    # cpro is Linux-only (syscall.Exec, flock, TCGETS, ...); every source file
+    # carries //go:build linux.
+    runs-on: ubuntu-latest
+    # The suite drives real ptys and asserts on real truecolor ANSI output
+    # (accent()/lipgloss color-profile detection) — COLORTERM must say
+    # truecolor, and TERM must not be "dumb"/NO_COLOR must be unset, or
+    # color-dependent assertions fail for reasons unrelated to the code
+    # (see cpro-app/CLAUDE.md's own note on this).
+    env:
+      COLORTERM: truecolor
+      TERM: xterm-256color
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          fmt="$(gofmt -l ./src)"
+          if [ -n "$fmt" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$fmt"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build -o bin/cpro ./src
+
+      - name: go test
+        run: go test -count=1 ./...

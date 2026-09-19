@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      COLORTERM: truecolor
+      TERM: xterm-256color
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go vet ./...
+
+      - run: go test ./...
+
+      # cpro is Linux-only (every source file is //go:build linux — it uses
+      # syscall.Exec, flock, TCGETS, /proc scanning), so the release only
+      # ever covers Linux; amd64 and arm64 are the two architectures that
+      # matter for that. CGO_ENABLED=0 keeps both binaries static (no libc
+      # dependency at the target), and cross-compiling arm64 from an amd64
+      # runner is safe here since nothing in the dependency tree needs cgo
+      # (verified locally before adding this job).
+      - name: Build release binaries
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/cpro-linux-amd64 ./src
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/cpro-linux-arm64 ./src
+          (cd dist && sha256sum * > checksums.txt)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
