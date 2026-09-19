@@ -4,6 +4,23 @@
 multiple Claude Code accounts by email — each with its own isolated login,
 settings, and history.
 
+It exists because the $100/month Max plan isn't in everyone's budget, but two
+$20/month Pro subscriptions might be. cpro lets you switch between accounts
+in seconds instead of juggling manual logins — and when one account hits its
+usage limit mid-conversation, `cpro session continue` picks up that exact
+same conversation under a different account, so you keep working instead of
+waiting for a reset.
+
+## What it does
+
+1. **`cpro`** — opens the interactive launcher.
+2. Select **`run`**.
+3. Pick which account runs Claude Code.
+4. Pick a permission mode — e.g. **YOLO**, which skips every prompt.
+5. cpro hands off to `claude` with that account and mode.
+
+That's the whole flow — no flags to memorize for everyday use:
+
 ![Picking run, an account, YOLO mode, and launching claude](../.images/cpro-header.svg)
 
 ## Install
