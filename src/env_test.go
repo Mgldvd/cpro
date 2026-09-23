@@ -19,5 +19,8 @@ func TestMain(m *testing.M) {
 	os.Unsetenv("NO_COLOR")
 	os.Setenv("TERM", "xterm-256color")
 	os.Setenv("COLORTERM", "truecolor")
+	// No test may reach Claude's real OAuth token endpoint (decision 0066):
+	// a test that needs it points oauthTokenURL at its own local server.
+	oauthTokenURL = "http://127.0.0.1:1/oauth-token-endpoint-disabled-in-tests"
 	os.Exit(m.Run())
 }

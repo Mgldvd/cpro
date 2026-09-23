@@ -220,8 +220,13 @@ func usageStaleNote(st usageStatus) string {
 	if st.Reason != "" {
 		note += " · " + st.Reason
 	}
-	if st.Reason == "token expired" {
-		note += " — run Claude on this account once"
+	switch st.Reason {
+	case "token expired":
+		// cpro renews expired tokens itself (decision 0066); this only lasts
+		// while a renewal can't be done yet — retried after the backoff.
+		note += " — renewing"
+	case "signed out":
+		note += " — run cpro login"
 	}
 	return note
 }

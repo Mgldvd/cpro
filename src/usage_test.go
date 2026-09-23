@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ import (
 // local server: a failure keeps the last value but marks it stale with a
 // reason and age, a rate limit is backed off (shared through the cache file,
 // so no request is sent until it expires), an expired token is detected
-// locally without a request, and a failure with nothing cached is an error.
+// before any usage request, and a failure with nothing cached is an error.
 func TestUsageFreshness(t *testing.T) {
 	const body = `{"five_hour":{"utilization":20,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":100,"resets_at":"2099-01-02T00:00:00Z"}}`
 	type server struct {
@@ -108,25 +109,6 @@ func TestUsageFreshness(t *testing.T) {
 		}
 	})
 
-	t.Run("expired token is detected locally, without a request", func(t *testing.T) {
-		srv, profile := newServer(t), newProfile(t, time.Now().Add(-time.Minute))
-		_, st, err := loadUsage(profile, srv.url)
-		if err == nil || st.Reason != "token expired" || *srv.calls != 0 {
-			t.Fatalf("expected a local token-expired failure and no request: %+v %v calls=%d", st, err, *srv.calls)
-		}
-	})
-
-	t.Run("401 is reported as an expired token", func(t *testing.T) {
-		srv, profile := newServer(t), newProfile(t, time.Time{})
-		*srv.status = http.StatusUnauthorized
-		if _, st, err := loadUsage(profile, srv.url); err == nil || st.Reason != "token expired" {
-			t.Fatalf("got %+v %v", st, err)
-		}
-		if note := usageStaleNote(usageStatus{Stale: true, FetchedAt: time.Now(), Reason: "token expired"}); !strings.Contains(note, "run Claude on this account") {
-			t.Fatalf("expected the fix in the note, got %q", note)
-		}
-	})
-
 	t.Run("backoff grows and is capped", func(t *testing.T) {
 		if got := backoffFor(time.Minute, 1); got != time.Minute {
 			t.Fatalf("first failure: %v", got)
@@ -182,4 +164,179 @@ func TestUsageElapsedWindowRendering(t *testing.T) {
 	if !strings.Contains(compact, "3h 0m ago") {
 		t.Fatalf("expected the compact row to show its age:\n%s", compact)
 	}
+}
+
+// TestOAuthRefresh covers decision 0066: cpro renews an idle account's expired
+// token itself — the same refresh request Claude Code makes — against a local
+// token server, so usage keeps updating with no one opening Claude.
+func TestOAuthRefresh(t *testing.T) {
+	type env struct {
+		profile     string
+		usageCalls  *int
+		tokenCalls  *int
+		tokenStatus *int
+		usageURL    string
+		lastRefresh *map[string]string
+		tokenBody   *string
+	}
+	setup := func(t *testing.T, creds string) env {
+		t.Helper()
+		// A profile shaped like cpro's own (<config>/accounts/<hash>), so the
+		// account lock path resolves inside this test's directory.
+		profile := filepath.Join(t.TempDir(), "accounts", "hash")
+		if err := os.MkdirAll(profile, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(profile, ".credentials.json"), []byte(creds), 0600); err != nil {
+			t.Fatal(err)
+		}
+		e := env{profile: profile, usageCalls: new(int), tokenCalls: new(int), tokenStatus: new(int), lastRefresh: new(map[string]string), tokenBody: new(string)}
+		*e.tokenBody = `{"error":"invalid_grant","error_description":"Refresh token not found or invalid"}`
+		*e.tokenStatus = http.StatusOK
+		usage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*e.usageCalls++
+			if r.Header.Get("Authorization") != "Bearer new-access" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprint(w, `{"five_hour":{"utilization":7},"seven_day":{"utilization":100}}`)
+		}))
+		t.Cleanup(usage.Close)
+		token := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*e.tokenCalls++
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			*e.lastRefresh = body
+			if *e.tokenStatus != http.StatusOK {
+				w.WriteHeader(*e.tokenStatus)
+				fmt.Fprint(w, *e.tokenBody)
+				return
+			}
+			fmt.Fprint(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":28800,"scope":"user:inference user:profile"}`)
+		}))
+		t.Cleanup(token.Close)
+		old := oauthTokenURL
+		oauthTokenURL = token.URL
+		t.Cleanup(func() { oauthTokenURL = old })
+		e.usageURL = usage.URL
+		return e
+	}
+	expired := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"old-access","refreshToken":"old-refresh","expiresAt":%d,"scopes":["user:inference","user:profile"],"subscriptionType":"pro"},"mcpOAuth":{"keep":"me"}}`,
+		time.Now().Add(-time.Hour).UnixMilli())
+	readCreds := func(t *testing.T, profile string) map[string]any {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(profile, ".credentials.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	t.Run("an expired token is renewed and usage fetched with the new one", func(t *testing.T) {
+		e := setup(t, expired)
+		usage, st, err := loadUsage(e.profile, e.usageURL)
+		if err != nil || st.Stale || usage.SevenDay.Utilization != 100 {
+			t.Fatalf("expected live usage after renewal: %+v %+v %v", usage, st, err)
+		}
+		if *e.tokenCalls != 1 || *e.usageCalls != 1 {
+			t.Fatalf("expected one refresh then one usage request, got %d/%d", *e.tokenCalls, *e.usageCalls)
+		}
+		req := *e.lastRefresh
+		if req["grant_type"] != "refresh_token" || req["refresh_token"] != "old-refresh" || req["client_id"] != oauthClientID || req["scope"] != "user:inference user:profile" {
+			t.Fatalf("refresh request = %v", req)
+		}
+		creds := readCreds(t, e.profile)
+		oauth := creds["claudeAiOauth"].(map[string]any)
+		if oauth["accessToken"] != "new-access" || oauth["refreshToken"] != "new-refresh" || oauth["subscriptionType"] != "pro" {
+			t.Fatalf("credentials not updated in place: %v", oauth)
+		}
+		if exp := int64(oauth["expiresAt"].(float64)); time.UnixMilli(exp).Before(time.Now().Add(7 * time.Hour)) {
+			t.Fatalf("expiresAt not moved forward: %v", time.UnixMilli(exp))
+		}
+		if mcp, _ := creds["mcpOAuth"].(map[string]any); mcp["keep"] != "me" {
+			t.Fatalf("other credential keys must survive: %v", creds)
+		}
+		if info, err := os.Stat(filepath.Join(e.profile, ".credentials.json")); err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("credentials must stay 0600: %v %v", info.Mode(), err)
+		}
+		if _, err := os.Stat(filepath.Join(e.profile, oauthRefreshLockName)); !os.IsNotExist(err) {
+			t.Fatal("the refresh lock must be released")
+		}
+	})
+
+	t.Run("a 401 with an unexpired token renews once and retries", func(t *testing.T) {
+		e := setup(t, fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"old-access","refreshToken":"old-refresh","expiresAt":%d}}`, time.Now().Add(time.Hour).UnixMilli()))
+		if _, st, err := loadUsage(e.profile, e.usageURL); err != nil || st.Stale {
+			t.Fatalf("expected the retry to succeed: %+v %v", st, err)
+		}
+		if *e.usageCalls != 2 || *e.tokenCalls != 1 {
+			t.Fatalf("expected 401, refresh, retry: usage=%d token=%d", *e.usageCalls, *e.tokenCalls)
+		}
+	})
+
+	t.Run("a rejected refresh token reports signed out and leaves credentials untouched", func(t *testing.T) {
+		e := setup(t, expired)
+		*e.tokenStatus = http.StatusBadRequest
+		if _, st, err := loadUsage(e.profile, e.usageURL); err == nil || st.Reason != "signed out" || *e.usageCalls != 0 {
+			t.Fatalf("got %+v %v usage=%d", st, err, *e.usageCalls)
+		}
+		if oauth := readCreds(t, e.profile)["claudeAiOauth"].(map[string]any); oauth["accessToken"] != "old-access" {
+			t.Fatalf("a failed refresh must not write: %v", oauth)
+		}
+		if note := usageStaleNote(usageStatus{Stale: true, FetchedAt: time.Now(), Reason: "signed out"}); !strings.Contains(note, "run cpro login") {
+			t.Fatalf("expected the fix in the note, got %q", note)
+		}
+	})
+
+	t.Run("Claude holding its refresh lock means skip, not race", func(t *testing.T) {
+		e := setup(t, expired)
+		if err := os.Mkdir(filepath.Join(e.profile, oauthRefreshLockName), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if _, st, err := loadUsage(e.profile, e.usageURL); err == nil || st.Reason != "token expired" || *e.tokenCalls != 0 {
+			t.Fatalf("expected a skipped refresh: %+v %v token=%d", st, err, *e.tokenCalls)
+		}
+	})
+
+	t.Run("an abandoned refresh lock is taken over", func(t *testing.T) {
+		e := setup(t, expired)
+		lock := filepath.Join(e.profile, oauthRefreshLockName)
+		if err := os.Mkdir(lock, 0700); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-2 * oauthRefreshLockStale)
+		if err := os.Chtimes(lock, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := loadUsage(e.profile, e.usageURL); err != nil || *e.tokenCalls != 1 {
+			t.Fatalf("expected the stale lock taken and the refresh done: %v token=%d", err, *e.tokenCalls)
+		}
+	})
+
+	t.Run("a 400 that isn't invalid_grant is not reported as signed out", func(t *testing.T) {
+		e := setup(t, expired)
+		*e.tokenStatus = http.StatusBadRequest
+		*e.tokenBody = `{"type":"error","error":{"type":"invalid_request_error","message":"Client not found"}}`
+		if _, st, err := loadUsage(e.profile, e.usageURL); err == nil || st.Reason != "token expired" {
+			t.Fatalf("got %+v %v", st, err)
+		}
+	})
+
+	t.Run("no refresh token means signed out, without a request", func(t *testing.T) {
+		e := setup(t, fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"old-access","expiresAt":%d}}`, time.Now().Add(-time.Hour).UnixMilli()))
+		if _, st, err := loadUsage(e.profile, e.usageURL); err == nil || st.Reason != "signed out" || *e.tokenCalls != 0 {
+			t.Fatalf("got %+v %v token=%d", st, err, *e.tokenCalls)
+		}
+	})
+
+	t.Run("profileLockPath matches the store's account lock", func(t *testing.T) {
+		s := &store{dir: t.TempDir()}
+		if got, want := profileLockPath(s.profile("a@example.com")), s.accountLockPath("a@example.com"); got != want {
+			t.Fatalf("%s != %s", got, want)
+		}
+	})
 }

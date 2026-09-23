@@ -23,8 +23,9 @@ const usageFreshFor = 55 * time.Second
 // Backoff after a failed fetch (decision 0065). The usage endpoint rate-limits
 // hard — per IP, and shared with Claude Code itself and every other cpro
 // window — so retrying on every redraw only extends the 429. An expired token
-// cannot fix itself until Claude runs under that account again, so it waits
-// longest. Consecutive failures double the wait up to usageBackoffMax.
+// is renewed by cpro itself (decision 0066); a dead login ("signed out", "not
+// signed in") only a new login fixes, so it waits longest. Consecutive
+// failures double the wait up to usageBackoffMax.
 const (
 	usageBackoffBase    = time.Minute
 	usageBackoffMax     = 10 * time.Minute
@@ -145,39 +146,88 @@ func writeUsageCache(path string, cached usageCache) {
 	}
 }
 
-func fetchUsage(profile, endpoint string) (accountUsage, error) {
-	var credentials struct {
-		ClaudeAI struct {
-			AccessToken string `json:"accessToken"`
-			ExpiresAt   int64  `json:"expiresAt"` // Unix milliseconds; 0 when absent
-		} `json:"claudeAiOauth"`
-	}
-	var usage accountUsage
+// oauthCredentials is the part of .credentials.json fetchUsage needs.
+type oauthCredentials struct {
+	ClaudeAI struct {
+		AccessToken string `json:"accessToken"`
+		ExpiresAt   int64  `json:"expiresAt"` // Unix milliseconds; 0 when absent
+	} `json:"claudeAiOauth"`
+}
+
+func readOAuthCredentials(profile string) (oauthCredentials, error) {
+	var creds oauthCredentials
 	b, err := os.ReadFile(filepath.Join(profile, ".credentials.json"))
 	if err != nil {
+		return creds, err
+	}
+	if err := json.Unmarshal(b, &creds); err != nil || creds.ClaudeAI.AccessToken == "" {
+		return creds, fmt.Errorf("OAuth credentials unavailable")
+	}
+	return creds, nil
+}
+
+// renewToken refreshes profile's token (refreshAccountToken, oauth.go) and
+// maps the outcome to the reason usage reports when it could not: "signed
+// out" needs a new login, "token expired" is retried after the backoff
+// (decision 0066).
+func renewToken(profile, failedToken string) error {
+	switch err := refreshAccountToken(profile, failedToken); {
+	case err == nil:
+		return nil
+	case errors.Is(err, errRefreshSignedOut):
+		return &usageFetchError{reason: "signed out", wait: usageBackoffExpired}
+	default:
+		return &usageFetchError{reason: "token expired", wait: usageBackoffBase}
+	}
+}
+
+func fetchUsage(profile, endpoint string) (accountUsage, error) {
+	var usage accountUsage
+	creds, err := readOAuthCredentials(profile)
+	if err != nil {
 		return usage, &usageFetchError{reason: "not signed in", wait: usageBackoffExpired}
 	}
-	if err := json.Unmarshal(b, &credentials); err != nil || credentials.ClaudeAI.AccessToken == "" {
-		return usage, &usageFetchError{reason: "not signed in", wait: usageBackoffExpired}
-	}
-	// cpro never refreshes a token — only Claude Code does, when it runs under
-	// this account — so an account left idle (typically because its week is
-	// full) outlives its access token. Checking locally spares the endpoint a
-	// request that can only return 401.
-	if exp := credentials.ClaudeAI.ExpiresAt; exp > 0 && time.Now().After(time.UnixMilli(exp)) {
-		return usage, &usageFetchError{reason: "token expired", wait: usageBackoffExpired}
+	// cpro renews an expired (or about-to-expire) token itself, the way Claude
+	// Code would if it were running, so an idle account keeps updating with no
+	// one opening Claude under it (decision 0066).
+	if exp := creds.ClaudeAI.ExpiresAt; exp > 0 && time.Now().Add(oauthRefreshEarly).After(time.UnixMilli(exp)) {
+		if err := renewToken(profile, creds.ClaudeAI.AccessToken); err != nil {
+			return usage, err
+		}
+		if creds, err = readOAuthCredentials(profile); err != nil {
+			return usage, &usageFetchError{reason: "not signed in", wait: usageBackoffExpired}
+		}
 	}
 
+	usage, status, err := requestUsage(endpoint, creds.ClaudeAI.AccessToken)
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		// Revoked or expired early, which expiresAt couldn't show: renew once
+		// and retry, rather than waiting out a backoff for nothing.
+		if err := renewToken(profile, creds.ClaudeAI.AccessToken); err != nil {
+			return usage, err
+		}
+		if creds, err = readOAuthCredentials(profile); err != nil {
+			return usage, &usageFetchError{reason: "not signed in", wait: usageBackoffExpired}
+		}
+		usage, _, err = requestUsage(endpoint, creds.ClaudeAI.AccessToken)
+	}
+	return usage, err
+}
+
+// requestUsage makes the usage request itself, returning the HTTP status
+// alongside the classified error so fetchUsage can react to a 401.
+func requestUsage(endpoint, accessToken string) (accountUsage, int, error) {
+	var usage accountUsage
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return usage, err
+		return usage, 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+credentials.ClaudeAI.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("User-Agent", "cpro/"+version)
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
-		return usage, &usageFetchError{reason: "offline", wait: usageBackoffBase}
+		return usage, 0, &usageFetchError{reason: "offline", wait: usageBackoffBase}
 	}
 	defer response.Body.Close()
 	switch {
@@ -186,14 +236,14 @@ func fetchUsage(profile, endpoint string) (accountUsage, error) {
 		if secs, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && time.Duration(secs)*time.Second > wait {
 			wait = time.Duration(secs) * time.Second
 		}
-		return usage, &usageFetchError{reason: "rate limited", wait: wait}
+		return usage, response.StatusCode, &usageFetchError{reason: "rate limited", wait: wait}
 	case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
-		return usage, &usageFetchError{reason: "token expired", wait: usageBackoffExpired}
+		return usage, response.StatusCode, &usageFetchError{reason: "token expired", wait: usageBackoffExpired}
 	case response.StatusCode != http.StatusOK:
-		return usage, &usageFetchError{reason: fmt.Sprintf("HTTP %d", response.StatusCode), wait: usageBackoffBase}
+		return usage, response.StatusCode, &usageFetchError{reason: fmt.Sprintf("HTTP %d", response.StatusCode), wait: usageBackoffBase}
 	}
 	if err := json.NewDecoder(response.Body).Decode(&usage); err != nil {
-		return usage, &usageFetchError{reason: "bad response", wait: usageBackoffBase}
+		return usage, response.StatusCode, &usageFetchError{reason: "bad response", wait: usageBackoffBase}
 	}
-	return usage, nil
+	return usage, response.StatusCode, nil
 }

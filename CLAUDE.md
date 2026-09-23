@@ -53,7 +53,7 @@ All source files are tagged `//go:build linux`; this is a Linux-only tool (uses
 
 ## Architecture
 
-Eighteen files (all under `src/`), one package (`main`), each with a distinct responsibility:
+Nineteen files (all under `src/`), one package (`main`), each with a distinct responsibility:
 
 - **main.go** — builds the Cobra command tree (`rootCommand`). Owns argument parsing,
   including the hand-rolled `runArgs` parser for `cpro run`: Cobra flag parsing is
@@ -227,11 +227,24 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
   card's `usageStaleNote` line, a compact row's age); a failed fetch is
   recorded in the same cache file (`fail_reason`/`fail_count`/`retry_at`) and
   backed off — 1m for a 429 (the endpoint rate-limits per IP, shared with
-  Claude Code), 5m for an expired token, doubling to a 10m cap — so no cpro
-  process retries on every redraw; an expired token is detected locally from
-  `expiresAt` (cpro never refreshes tokens — only Claude Code does, when it
-  runs). `windowElapsed` (ui.go) marks a window whose reset has passed: it
+  Claude Code), 5m for a dead login, doubling to a 10m cap — so no cpro
+  process retries on every redraw. An expired (or within 5 minutes of
+  expiring) token, or a 401, is **renewed by cpro itself** (decision 0066,
+  `oauth.go`'s `refreshAccountToken`): the same refresh request Claude Code
+  makes (`oauthTokenURL`/`oauthClientID`, read from the installed Claude Code),
+  under cpro's exclusive account lock *and* Claude Code's own
+  `.oauth_refresh.lock` (a proper-lockfile directory in the profile, stale
+  after 60s), skipped while a live cpro session runs under the account (it
+  renews its own), re-checked under the locks, and written back — token
+  fields only, every other `.credentials.json` key preserved — only after a
+  200. Only `invalid_grant` reports "signed out"; `TestMain` points
+  `oauthTokenURL` at a dead local address so no test ever reaches the real
+  endpoint. `windowElapsed` (ui.go) marks a window whose reset has passed: it
   renders `--`/`reset` and never counts toward Total week.
+- **oauth.go** (decision 0066) — `refreshAccountToken`: renews an account's expired
+  claude.ai access token in place so `cpro status`/`watch` keep updating an idle
+  account without anyone opening Claude under it. See usage.go above for when it's
+  called and the invariants below for the locking it must keep.
 - **ui.go** — terminal presentation only: color/TTY detection (`NO_COLOR`,
   `TERM=dumb`, non-terminal output), the shared Huh form runner (`runSelect`, still
   used by `pickRequiredArgs`/`config`'s scriptable-arg prompts and taking an `accent`
@@ -1395,6 +1408,13 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
 - **Never let environment-based auth override account selection.** `claudeCommand`
   rejects `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, etc. —
   any change to child-process environment setup must keep this check.
+- **Refresh an account's token only in place, under both locks.** The one
+  place cpro writes an OAuth token it didn't get from a login is
+  `refreshAccountToken` (oauth.go, decision 0066): same profile in, same
+  profile out, never copied to another profile, only after a successful
+  response, and only while holding cpro's account lock and Claude Code's own
+  `.oauth_refresh.lock` — refresh tokens rotate, so two refreshers racing
+  would sign the account out.
 - **Never copy a live refresh token during reauthentication.** `login` only seeds
   `.claude.json` (settings) into the staging dir, not `.credentials.json`; the new
   credentials always come from a fresh `claude auth login`.
