@@ -12,21 +12,26 @@ executable, setting `CLAUDE_CONFIG_DIR` per invocation so each account gets its 
 
 ## Project knowledge
 
-Project knowledge lives in `.memory/`. Before meaningful work, read `.memory/index.md`
-and follow only the documentation relevant to the task; read `.memory/STATUS.md` when
-current/in-flight state matters. Treat `.memory/decisions/` as durable rationale for
-significant choices. If a code change makes project knowledge false or materially
-incomplete, update the affected `.memory/` document in the same change.
+Project knowledge is not in this repository. Since decision 0062 made `cpro-app/`
+its own repo, it lives in the private workspace this repo is checked out inside,
+in the sibling directory `../cpro-memory/`. That's what the "decision NNNN" citations
+throughout this file refer to. When that workspace is present, read
+[`../cpro-memory/index.md`](../cpro-memory/index.md) before meaningful work,
+[`../cpro-memory/STATUS.md`](../cpro-memory/STATUS.md) when current state matters,
+and treat [`../cpro-memory/decisions/`](../cpro-memory/decisions/index.md) as the
+durable rationale for significant choices. If a code change makes that knowledge
+false or materially incomplete, update the affected document in the same change.
+In a standalone clone, this file and the READMEs are all there is.
 
 **Before changing any screen**, read
-[`.memory/ux/cpro-screen-map.md`](.memory/ux/cpro-screen-map.md) — the
-user-maintained Obsidian canvas mapping every screen, the navigation between them,
-and the open UX items annotated in place on it (a scrolling bug, three commands that
-still need in-app account pickers). It is the source of truth for what the UI looks
-like and what is pending on it, where
-[`.memory/workflows/command-and-permission-flows.md`](.memory/workflows/command-and-permission-flows.md)
-is the source of truth for the code underneath. When a change alters a screen the
-canvas captures, say so, so its screenshots can be re-taken.
+[`../cpro-memory/ux/cpro-screen-map.md`](../cpro-memory/ux/cpro-screen-map.md). It
+describes the Obsidian canvas that maps every screen by its navigation path, drawn
+from the generated captures in `../cpro-captures/screens/`. It is the source of
+truth for what the UI looks like, and
+[`../cpro-memory/workflows/command-and-permission-flows.md`](../cpro-memory/workflows/command-and-permission-flows.md)
+is the source of truth for the code underneath. When a change alters a screen,
+regenerate the captures (`../cpro-captures/capture-screens.sh`), and update the
+canvas if a screen was added or removed.
 
 ## Commands
 
