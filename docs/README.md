@@ -64,7 +64,7 @@ cpro run                     # or run non-interactively
 | `cpro run [--account EMAIL] [-- CLAUDE ARGS]` | launch Claude Code |
 | `cpro --resume ID` / `-r ID [--account EMAIL]` | resume a specific session |
 | `cpro session` | sessions menu |
-| `cpro session continue [FROM TO] [-- CLAUDE ARGS]` | copy a session to another account and resume it |
+| `cpro session continue [FROM TO] [-- CLAUDE ARGS]` | move a session to another account and resume it |
 | `cpro session list [--json]` | list every recorded session |
 | `cpro session delete ID... [--yes] [--account EMAIL]` | permanently delete session transcripts |
 | `cpro system export [EMAIL]` | send a cpro account's credentials to the system `claude` |
@@ -132,6 +132,16 @@ Every interactive preference also has a scriptable equivalent:
 
 - **`cpro status`** shows every account's Session/Week usage, reset countdown,
   and active sessions. **`cpro watch`** repeats it on an interval.
+- Usage is never shown as current when it isn't: if a refresh fails, the card
+  keeps the last value and says so — `updated 12m ago · rate limited` — and
+  cpro waits before asking again instead of retrying on every redraw. A window
+  whose reset time has passed shows `--` and `reset` rather than its old
+  percentage.
+- An account you haven't used in a while — typically the one whose week is
+  full — keeps updating on its own: when its login token expires, cpro renews
+  it the same way Claude Code does, so you never have to open Claude under that
+  account just to see its usage again. Only a login that has truly ended asks
+  for `cpro login`.
 
 ### Live usage
 
@@ -152,6 +162,20 @@ a masked email there is masked here too.
   different account, list every recorded session, or delete transcripts.
 
 ![SESSIONS menu](../.images/cpro-root-menu-session.svg)
+
+  **Continue** is two picks: the session, then the account. Each session row
+  shows what the conversation is about (its title, or the first prompt), and
+  `● running` when a Claude process is still using it — continuing that one
+  forks the conversation, so it is a deliberate choice. The account step lists
+  every account, the session's own included (to resume it in place once its
+  limit resets), with live usage and `○ signed out` on any that can't start
+  Claude. cpro never picks the account for you. It then copies just that
+  session and resumes it in the directory it was recorded in — even while the
+  destination account has other sessions or background jobs running.
+
+![CONTINUE SESSION picker](../.images/cpro-root-menu-session-continue.svg)
+
+![DESTINATION ACCOUNT picker](../.images/cpro-root-menu-session-continue-account.svg)
 
 - **`cpro system export`/`import`** move one account's credentials between
   cpro and the system `claude` install — so you never have to sign in twice on

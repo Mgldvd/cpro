@@ -475,7 +475,8 @@ var watchModeItems = []struct{ label, desc string }{
 // Interval row steps through (decision 0045) — the same fixed set whether or
 // not it matches `cpro watch --interval`'s 5s minimum, which every choice
 // here clears. 60s (index 3, watchDefaultInterval) is the default, matching
-// both `cpro watch`'s own flag default and the 60s usage cache.
+// `cpro watch`'s own flag default — just over the 55s usage cache
+// (usageFreshFor), so each refresh fetches.
 var watchIntervalChoices = []time.Duration{
 	5 * time.Second, 15 * time.Second, 30 * time.Second,
 	time.Minute, 5 * time.Minute, 15 * time.Minute,

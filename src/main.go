@@ -381,7 +381,7 @@ func rootCommand() *cobra.Command {
 	var watchInterval time.Duration
 	var watchCompact bool
 	watch := &cobra.Command{Use: "watch", Short: "Refresh cpro status on an interval until Esc Esc or Ctrl+C", Args: cobra.NoArgs,
-		Long: "Repeats cpro status's interactive view on an interval, clearing the screen between refreshes in a terminal (or, redirected to a file, just appending timestamped snapshots for a log). The default interval, 60s, matches the on-disk usage cache, so every refresh shows freshly fetched data without extra requests to Anthropic's usage endpoint — a shorter --interval only redraws the same cached numbers more often, it does not poll more often. In a terminal, press Esc twice (like the rest of cpro's pickers) or Ctrl+C to stop.",
+		Long: "Repeats cpro status's interactive view on an interval, clearing the screen between refreshes in a terminal (or, redirected to a file, just appending timestamped snapshots for a log). The default interval, 60s, is just longer than the 55s on-disk usage cache, so every refresh shows freshly fetched data without extra requests to Anthropic's usage endpoint — a shorter --interval only redraws the same cached numbers more often, it does not poll more often. A value that couldn't be refreshed (rate limited, offline) is shown with how old it is and why. In a terminal, press Esc twice (like the rest of cpro's pickers) or Ctrl+C to stop.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if watchInterval < 5*time.Second {
 				return fmt.Errorf("--interval must be at least 5s")
@@ -393,7 +393,7 @@ func rootCommand() *cobra.Command {
 			return watchLoop(cmd, s, watchInterval, watchCompact)
 		},
 	}
-	watch.Flags().DurationVar(&watchInterval, "interval", 60*time.Second, "Refresh interval (minimum 5s); shorter than the 60s usage cache just redraws the same numbers more often")
+	watch.Flags().DurationVar(&watchInterval, "interval", 60*time.Second, "Refresh interval (minimum 5s); shorter than the 55s usage cache just redraws the same numbers more often")
 	watch.Flags().BoolVar(&watchCompact, "compact", false, "Compact view: one row per account with side-by-side Session/Week bars, no status/session detail")
 	root.AddCommand(watch)
 	run := &cobra.Command{Use: "run [--account EMAIL] [--] [CLAUDE ARGUMENTS...]", Short: "Run Claude Code and forward its arguments", DisableFlagParsing: true,
