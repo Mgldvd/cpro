@@ -214,8 +214,19 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
   refuses while such a process is alive, headless runs included. `list`/`ls`, `status`, and `doctor` read
   profiles without taking a lock, since they're purely informational.
 - **usage.go** — fetches session/week usage from the undocumented Anthropic OAuth
-  usage endpoint using the account's stored access token, with a 60s on-disk cache
-  (`cpro-usage.json` per profile) and graceful fallback to a stale cached value.
+  usage endpoint using the account's stored access token, with an on-disk cache
+  (`cpro-usage.json` per profile) fresh for `usageFreshFor` (55s — just under
+  `cpro watch`'s 60s default interval, so each refresh fetches). Decision 0065:
+  `loadUsage` returns a `usageStatus` (`Stale`/`FetchedAt`/`Reason`) that every
+  view must surface rather than passing an old value off as live (the status
+  card's `usageStaleNote` line, a compact row's age); a failed fetch is
+  recorded in the same cache file (`fail_reason`/`fail_count`/`retry_at`) and
+  backed off — 1m for a 429 (the endpoint rate-limits per IP, shared with
+  Claude Code), 5m for an expired token, doubling to a 10m cap — so no cpro
+  process retries on every redraw; an expired token is detected locally from
+  `expiresAt` (cpro never refreshes tokens — only Claude Code does, when it
+  runs). `windowElapsed` (ui.go) marks a window whose reset has passed: it
+  renders `--`/`reset` and never counts toward Total week.
 - **ui.go** — terminal presentation only: color/TTY detection (`NO_COLOR`,
   `TERM=dumb`, non-terminal output), the shared Huh form runner (`runSelect`, still
   used by `pickRequiredArgs`/`config`'s scriptable-arg prompts and taking an `accent`

@@ -135,7 +135,7 @@ func TestUsage(t *testing.T) {
 	}))
 
 	usage, stale, err := loadUsage(profile, server.URL)
-	if err != nil || stale || usage.FiveHour.Utilization != 12.5 || usage.SevenDay.Utilization != 47 {
+	if err != nil || stale.Stale || usage.FiveHour.Utilization != 12.5 || usage.SevenDay.Utilization != 47 {
 		t.Fatalf("usage: %+v stale=%v err=%v", usage, stale, err)
 	}
 	if _, _, err := loadUsage(profile, server.URL); err != nil || calls != 1 {
@@ -152,7 +152,7 @@ func TestUsage(t *testing.T) {
 	}
 	server.Close()
 	usage, stale, err = loadUsage(profile, server.URL)
-	if err != nil || !stale || usage.SevenDay.Utilization != 47 {
+	if err != nil || !stale.Stale || usage.SevenDay.Utilization != 47 {
 		t.Fatalf("stale cache: %+v stale=%v err=%v", usage, stale, err)
 	}
 	if bar := usageBarWidth(&bytes.Buffer{}, -2, 20); strings.Contains(bar, "\x1b") || strings.Count(bar, "█") != 0 {

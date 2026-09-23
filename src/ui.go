@@ -191,6 +191,41 @@ func usageReset(value string) (time.Time, bool) {
 	return reset, true
 }
 
+// windowElapsedText replaces a countdown whose reset time has already passed.
+const windowElapsedText = "reset"
+
+// windowElapsed reports whether win's reset time has passed. A live fetch
+// always describes the current window, so this only happens with a stale
+// value — one whose utilization belongs to a window that no longer exists
+// and must not be shown as current (decision 0065).
+func windowElapsed(win usageWindow) bool {
+	reset, ok := usageReset(win.ResetsAt)
+	return ok && !reset.After(time.Now())
+}
+
+// usageAge is how old a usage value is, e.g. "12m ago".
+func usageAge(st usageStatus) string {
+	return formatDuration(time.Since(st.FetchedAt)) + " ago"
+}
+
+// usageStaleNote is the line a status card adds under a stale value: its age
+// and why it isn't current, with the one action that fixes an expired token
+// (cpro never refreshes one — Claude Code does, when it runs). Empty when the
+// value is live.
+func usageStaleNote(st usageStatus) string {
+	if !st.Stale {
+		return ""
+	}
+	note := "updated " + usageAge(st)
+	if st.Reason != "" {
+		note += " · " + st.Reason
+	}
+	if st.Reason == "token expired" {
+		note += " — run Claude on this account once"
+	}
+	return note
+}
+
 func doctorLine(w io.Writer, ok bool, name, detail string) string {
 	mark, color := "✓", "#34D399"
 	if !ok {

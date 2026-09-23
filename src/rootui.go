@@ -395,11 +395,12 @@ type runAccountUsageMsg struct {
 // these concurrent without this file hand-rolling a WaitGroup/channel fan-in
 // the way renderAccountSnapshot (main.go) has to for its own synchronous,
 // non-tea context. Both go through the same loadUsage (usage.go) — the shared
-// service cpro status/watch already use, including its own 60s on-disk cache
-// and stale-value fallback, so there is no second usage cache or freshness
-// policy here. A stale cached value still renders as a real percentage (it's
-// the best available answer and at most a minute old in the common case);
-// only an outright failure with no cache at all falls back to "--".
+// service cpro status/watch already use, including its on-disk cache, failure
+// backoff and stale-value fallback (decision 0065), so there is no second
+// usage cache or freshness policy here. A stale cached value still renders as
+// a real percentage (the best available answer for picking an account); an
+// outright failure with no cache, or a session window that has reset since
+// the value was fetched, falls back to "--".
 //
 // A free function (originally fetchRunAccountUsage, a *rootPickerApp method)
 // since decision 0036: DEFAULT ACCOUNT (configui.go) needs the identical
@@ -410,7 +411,9 @@ func fetchAccountPickerUsage(s *store, emails []string) tea.Cmd {
 	for _, email := range emails {
 		cmds = append(cmds, func() tea.Msg {
 			usage, _, err := loadUsage(s.profile(email), usageEndpoint)
-			if err != nil {
+			// A session window that reset since a stale value was fetched has no
+			// meaningful percentage left (decision 0065): "--", not the old one.
+			if err != nil || windowElapsed(usage.FiveHour) {
 				return runAccountUsageMsg{email: email, usage: runAccountUsage{loaded: true, failed: true}}
 			}
 			return runAccountUsageMsg{email: email, usage: runAccountUsage{loaded: true, session: usage.FiveHour.Utilization, week: usage.SevenDay.Utilization}}

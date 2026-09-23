@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.1"
+const version = "0.1.2"
 
 func main() {
 	if s, err := openStore(); err == nil {
@@ -584,7 +584,7 @@ func renderAccountList(cmd *cobra.Command, w io.Writer, emails []string, authent
 
 type accountSnapshotState struct {
 	usage         accountUsage
-	stale         bool
+	usageStatus   usageStatus // how current usage is (stale, since when, why) — decision 0065
 	usageErr      error
 	authenticated bool
 	sessions      []runningSession
@@ -622,7 +622,7 @@ func renderAccountSnapshot(cmd *cobra.Command, s *store, compact bool) error {
 		email := email
 		go func() {
 			var state accountSnapshotState
-			state.usage, state.stale, state.usageErr = loadUsage(s.profile(email), usageEndpoint)
+			state.usage, state.usageStatus, state.usageErr = loadUsage(s.profile(email), usageEndpoint)
 			auth, authErr := authStatus(s.profile(email))
 			state.authenticated = authErr == nil && validAuth(email, auth)
 			state.sessions = runningSessions(s.profile(email))
@@ -741,7 +741,9 @@ func newStatusCardLayout(termWidth int, emails []string, states map[string]accou
 		state := states[email]
 		if state.usageErr == nil {
 			for _, win := range [...]usageWindow{state.usage.FiveHour, state.usage.SevenDay} {
-				if reset, ok := usageReset(win.ResetsAt); ok {
+				if windowElapsed(win) {
+					resetWidth = max(resetWidth, visibleWidth(windowElapsedText))
+				} else if reset, ok := usageReset(win.ResetsAt); ok {
 					resetWidth = max(resetWidth, visibleWidth(formatCountdown(reset)))
 				}
 			}
@@ -862,6 +864,14 @@ func statusCardLine(w io.Writer, contentWidth int, content string) string {
 // additional fixed gap so the reset text never butts directly against the
 // "-" even when this render's longest reset string fills resetWidth exactly.
 func statusUsageLine(w io.Writer, layout statusCardLayout, letter string, win usageWindow) string {
+	if windowElapsed(win) {
+		// The value is from before this window reset, so it no longer says
+		// anything (decision 0065): an empty bar, "--", and "reset" in place of
+		// a countdown frozen at 0m.
+		left := letter + "  " + strings.Repeat("░", layout.barWidth) + " " + padStart("--", layout.pctWidth)
+		right := "-" + strings.Repeat(" ", statusSepGap) + padStart(windowElapsedText, layout.resetWidth)
+		return left + strings.Repeat(" ", max(1, layout.contentWidth-visibleWidth(left)-visibleWidth(right))) + right
+	}
 	value := max(0, win.Utilization)
 	pct := padStart(accent(w, pctText(value), usageColorFor(value)), layout.pctWidth)
 	left := letter + "  " + usageBarWidth(w, value, layout.barWidth) + " " + pct
@@ -925,6 +935,9 @@ func renderStatusCard(cmd *cobra.Command, w io.Writer, layout statusCardLayout, 
 		}{{"S", state.usage.FiveHour}, {"W", state.usage.SevenDay}} {
 			line(statusUsageLine(w, layout, block.letter, block.win))
 		}
+		if note := usageStaleNote(state.usageStatus); note != "" {
+			line(accent(w, truncateToWidth(note, layout.contentWidth), warningColor))
+		}
 	}
 
 	if len(state.sessions) > 0 {
@@ -954,7 +967,7 @@ func renderFullView(cmd *cobra.Command, w io.Writer, termWidth int, emails []str
 			cmd.Println("")
 		}
 		state := states[email]
-		if state.usageErr == nil {
+		if state.usageErr == nil && !windowElapsed(state.usage.SevenDay) {
 			weekSum += max(0, state.usage.SevenDay.Utilization)
 			weekCount++
 		}
@@ -1026,6 +1039,21 @@ func compactField(w io.Writer, letter string, value float64, narrow bool) string
 	return letter + " " + bar + " " + accent(w, pct, usageColorFor(value))
 }
 
+// compactCell is compactField, or its "--" placeholder when there is no
+// usable value: usage unavailable, or a window that has reset since the value
+// was fetched (decision 0065). Before this the compact view rendered an
+// unavailable account as a real-looking 0%.
+func compactCell(w io.Writer, letter string, state accountSnapshotState, win usageWindow, narrow bool) string {
+	if state.usageErr != nil || windowElapsed(win) {
+		bar := strings.Repeat("░", compactBarWidth)
+		if narrow {
+			bar = "·"
+		}
+		return letter + " " + bar + " " + fmt.Sprintf("%*s", compactPctWidth, "--")
+	}
+	return compactField(w, letter, win.Utilization, narrow)
+}
+
 // compactBarCol is the visible column (measured from the start of an account row's
 // content, right after its "│  " rail) at which that row's Week bar/glyph itself
 // begins — renderCompactView's Total week row aligns its own bar to this same
@@ -1056,7 +1084,7 @@ func renderCompactView(cmd *cobra.Command, w io.Writer, termWidth int, emails []
 	var weekCount int
 	for _, email := range emails {
 		state := states[email]
-		if state.usageErr == nil {
+		if state.usageErr == nil && !windowElapsed(state.usage.SevenDay) {
 			weekSum += max(0, state.usage.SevenDay.Utilization)
 			weekCount++
 		}
@@ -1065,9 +1093,17 @@ func renderCompactView(cmd *cobra.Command, w io.Writer, termWidth int, emails []
 			name = accent(w, name, "#F87171")
 		}
 		row := "  " + padEnd(name, nameWidth) + strings.Repeat(" ", compactNameGap)
-		row += compactField(w, "S", state.usage.FiveHour.Utilization, narrow)
+		row += compactCell(w, "S", state, state.usage.FiveHour, narrow)
 		row += strings.Repeat(" ", compactBlockGap)
-		row += compactField(w, "W", state.usage.SevenDay.Utilization, narrow)
+		row += compactCell(w, "W", state, state.usage.SevenDay, narrow)
+		// A stale row says how old it is, when there is room for it — the
+		// compact view has no line of its own to explain more (decision 0065).
+		if state.usageErr == nil && state.usageStatus.Stale {
+			age := usageAge(state.usageStatus)
+			if termWidth == 0 || termWidth >= compactRowWidth(nameWidth, narrow)+2+visibleWidth(age) {
+				row += "  " + accent(w, age, warningColor)
+			}
+		}
 		cmd.Println(accent(w, currentTheme.Rail(), accentMode) + "  " + row)
 	}
 	cmd.Println(accent(w, currentTheme.Rail(), accentMode))
