@@ -60,8 +60,10 @@ stops you from running one in each terminal, or switching whenever you want:
 
 ### Hit a limit? Keep going on another account
 
-`cpro session continue` copies your exact conversation to a different
-account and resumes it there — no lost context, no starting over:
+`cpro session continue` moves your exact conversation to a different account
+and resumes it there — no lost context, no starting over. Pick the session
+(each one shows what it's about), then pick the account yourself from their
+live usage; it works even while that account has other sessions running:
 
 ![DESTINATION ACCOUNT picker](.images/cpro-root-menu-session-continue-account.svg)
 
@@ -82,6 +84,13 @@ terminal on an interval — the bar recolors itself as it climbs:
 Every field on that card, explained:
 
 ![Annotated cpro status/watch card](.images/cpro-watch-annotated.png)
+
+It keeps telling the truth, too. An account you've left idle — say, the one
+whose week is full — keeps updating on its own: cpro renews its login token
+the same way Claude Code does, so you never have to open Claude there just to
+see its usage. And if a number can't be refreshed right now, the card says
+how old it is and why (`updated 12m ago · rate limited`) instead of passing
+it off as live.
 
 ### Make it yours
 

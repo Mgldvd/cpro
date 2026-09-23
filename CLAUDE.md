@@ -353,7 +353,10 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   (`missingAccount`, "run cpro login EMAIL" suggestions) are deliberately
   left unmasked — see decision 0024 for why both are out of scope.
 - **maintenance.go** — `doctor` (read-only diagnostic checks: cpro version, env
-  overrides, `claude` presence/version, network reachability, config, per-account auth),
+  overrides, `claude` presence/version, "Token renewal" — `checkOAuthRefreshCompat`,
+  decision 0068: the installed claude executable, symlinks resolved and read in
+  chunks, still contains the token URL and client ID `oauth.go` copies from it —
+  network reachability, config, per-account auth),
   `install` (atomically copies the current executable to `~/.local/bin/cpro`), and
   `info` (`cpro info`): a concise, read-only snapshot of the installation itself —
   version, binary path (`os.Executable()`), config directory, registered account
@@ -1216,41 +1219,28 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   does — confirmed by inspecting Desktop's own app bundle — so that piece
   needed no code change at all, mirroring decision 0027's "already shared"
   finding for `cpro session continue`.
-- **session.go** — `cpro session continue FROM_EMAIL TO_EMAIL`: hands off an
-  in-progress Claude conversation from one cpro account to another, for the
-  case that prompted it — `FROM_EMAIL` hit its usage limit mid-conversation
-  and the user wants to keep going under `TO_EMAIL` without hand-copying
-  files or guessing a session ID (see decision 0012). `projectDirName`
-  reproduces the one piece of Claude Code's own on-disk layout this needs —
-  the `CLAUDE_CONFIG_DIR/projects/<name>` folder Claude Code picks per working
-  directory — by replacing every `/` in the absolute cwd with `-`; this is
-  deliberately only as much of Claude Code's own encoding as was actually
-  observed across every real project folder on the machine this was built on,
-  not a guessed-at full reimplementation. `continueSession` copies every
-  `*.jsonl` transcript for the current directory's project folder from
-  `FROM_EMAIL`'s profile into `TO_EMAIL`'s — skipping (never overwriting) a
-  same-named file already present at the destination, and never touching or
-  deleting anything under `FROM_EMAIL` — then the command calls the same
-  `s.run` (claude.go) `cpro run` itself uses, with `--resume` and no session
-  ID, so Claude's own resume list (previews included) is what picks the exact
-  conversation rather than cpro guessing one from file-modification times
-  (the wrong guess, twice, in the live session that prompted this feature).
-  Only `TO_EMAIL` is locked (shared, `sessionCopyLock` — decision 0063) for
-  the copy; `FROM_EMAIL` is only ever read here, unlocked, the same way
-  `exportAccount`'s own read of a source account takes no lock either. Both
-  accounts must already be registered, and `FROM_EMAIL` must have at least
-  one recorded session for the current directory, or the command errors
-  before copying anything. `continueSession` now also takes an explicit
-  `sessionID` (decision 0025): when non-empty, the project directory to copy
-  is found by `findSessionDir` (scanning `FROM_EMAIL`'s own `projects/*` for
-  that session's transcript) instead of the current process's own working
-  directory — the interactive session picker (sessionui.go) always supplies
-  one, since the session it lets you pick may not belong to whatever
-  directory `cpro` happens to be run from; an empty `sessionID` preserves the
-  exact original cwd-based behavior for the plain, argument-only invocation.
-  `resumeSessionIDArg` pulls that ID back out of the forwarded
-  `--resume SESSION_ID` arguments the command already supported (decision
-  0012), so both the manual and the picker-built paths share one lookup.
+- **session.go** — `cpro session continue FROM_EMAIL TO_EMAIL -- --resume
+  SESSION_ID`: hands off one in-progress Claude conversation from one cpro
+  account to another, for the case that prompted it — `FROM_EMAIL` hit its
+  usage limit mid-conversation and the user wants to keep going under
+  `TO_EMAIL` (decision 0012). `continueSession` copies exactly that session's
+  `<id>.jsonl`, found under `FROM_EMAIL` in whichever project directory it
+  was recorded in (`findSessionDir`), into the same `projects/<dir>` under
+  `TO_EMAIL` — skipping (never overwriting) a copy already there, never
+  touching `FROM_EMAIL` — then the command restores the session's recorded
+  working directory and calls the same `s.run` (claude.go) `cpro run` uses.
+  The session ID is required (decision 0069): given none, the command errors
+  naming the two ways to pick one (`-- --resume SESSION_ID`, or no arguments
+  for the picker) instead of the old behavior — copying every transcript of
+  the *current* directory and letting Claude's own list pick — which moved a
+  whole history to resume one conversation and depended on where cpro was run.
+  Only `TO_EMAIL` is locked (shared, `sessionCopyLock` — decision 0063);
+  `FROM_EMAIL` is only read. `projectDirName` reproduces the one piece of
+  Claude Code's on-disk layout cpro needs — the `CLAUDE_CONFIG_DIR/projects/
+  <name>` folder per working directory, every `/` of the absolute cwd
+  replaced with `-` — only as much of that encoding as was actually observed.
+  `resumeSessionIDArg` pulls the ID back out of the forwarded `--resume
+  SESSION_ID` arguments, the one lookup the manual and picker-built paths share.
   `sessionEntry`/`listSessions` enumerate every recorded session (one row per
   `*.jsonl`) across every registered account's own `projects/*`, newest first
   by file mtime — the data source behind the interactive picker below, never

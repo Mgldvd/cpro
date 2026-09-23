@@ -28,26 +28,20 @@ func projectDirName(cwd string) string {
 	return strings.ReplaceAll(cwd, "/", "-")
 }
 
-// continueSession copies every Claude session transcript recorded under one
-// project directory from fromEmail's cpro profile into toEmail's, so a
-// conversation started under one account (typically one that just hit its
-// usage limit) can be picked up under another. It only ever adds files: the
-// originals under fromEmail are untouched, and a transcript already present
-// under toEmail (same session ID) is left alone rather than overwritten.
-// Only toEmail is locked (shared — see sessionCopyLock) since fromEmail is
-// only ever read here, the same way exportAccount reads a source account's
-// credentials with no lock at all.
+// continueSession copies one recorded Claude session transcript — sessionID,
+// found under fromEmail's profile in whichever project directory it was
+// recorded in (findSessionDir) — into toEmail's, so a conversation started
+// under one account (typically one that just hit its usage limit) can be
+// picked up under another. It only ever adds a file: the original under
+// fromEmail is untouched, and a copy already present under toEmail is left
+// alone rather than overwritten (copied is then 0). Only toEmail is locked
+// (shared — see sessionCopyLock) since fromEmail is only ever read here, the
+// same way exportAccount reads a source account's credentials with no lock.
 //
-// sessionID, when non-empty, is an explicit --resume SESSION_ID already
-// forwarded by the caller (decision 0025's interactive session picker always
-// supplies one, having shown the user exactly which session they picked from
-// across every account/directory): the project directory to copy is found by
-// locating that ID's own transcript (findSessionDir), not the current
-// process's own working directory, since the session picked may not belong
-// to whatever directory cpro happens to be run from. An empty sessionID
-// preserves the original, unchanged behavior — the current working
-// directory's own project folder — for the plain, non-interactive
-// `cpro session continue FROM_EMAIL TO_EMAIL` invocation.
+// sessionID is required (decision 0069): the command used to copy every
+// transcript of the current directory when given none and let Claude's own
+// list pick, which moved a whole history to resume one conversation and
+// depended on where cpro happened to be run from.
 func continueSession(s *store, fromEmail, toEmail, sessionID string) (copied int, err error) {
 	c, err := s.read()
 	if err != nil {
@@ -63,23 +57,17 @@ func continueSession(s *store, fromEmail, toEmail, sessionID string) (copied int
 		return 0, fmt.Errorf("FROM_EMAIL and TO_EMAIL must be different accounts")
 	}
 
-	var dirName string
-	if sessionID != "" {
-		dirName, err = findSessionDir(s, fromEmail, sessionID)
-		if err != nil {
-			return 0, err
-		}
-	} else {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return 0, err
-		}
-		dirName = projectDirName(cwd)
+	if sessionID == "" {
+		return 0, errSessionContinueNeedsID
 	}
-	srcDir := filepath.Join(s.profile(fromEmail), "projects", dirName)
-	entries, err := os.ReadDir(srcDir)
+	dirName, err := findSessionDir(s, fromEmail, sessionID)
 	if err != nil {
-		return 0, fmt.Errorf("no Claude session history found for this directory under %s", fromEmail)
+		return 0, err
+	}
+	name := sessionID + ".jsonl"
+	data, err := os.ReadFile(filepath.Join(s.profile(fromEmail), "projects", dirName, name))
+	if err != nil {
+		return 0, err
 	}
 
 	lock, err := sessionCopyLock(s, toEmail)
@@ -93,29 +81,19 @@ func continueSession(s *store, fromEmail, toEmail, sessionID string) (copied int
 		return 0, err
 	}
 
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		if sessionID != "" && name != sessionID+".jsonl" {
-			continue // an explicit session moves alone (decision 0064)
-		}
-		dst := filepath.Join(dstDir, name)
-		if _, err := os.Stat(dst); err == nil {
-			continue // already present under toEmail
-		}
-		data, err := os.ReadFile(filepath.Join(srcDir, name))
-		if err != nil {
-			return copied, err
-		}
-		if err := atomicWrite(dst, data); err != nil {
-			return copied, err
-		}
-		copied++
+	dst := filepath.Join(dstDir, name)
+	if _, err := os.Stat(dst); err == nil {
+		return 0, nil // already present under toEmail
 	}
-	return copied, nil
+	if err := atomicWrite(dst, data); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }
+
+// errSessionContinueNeedsID is what `cpro session continue FROM TO` without a
+// session says: the two ways to name one, rather than cpro guessing.
+var errSessionContinueNeedsID = errors.New("name the session to move: cpro session continue FROM_EMAIL TO_EMAIL -- --resume SESSION_ID (cpro session list shows the IDs), or run cpro session continue with no arguments to pick one")
 
 // sessionCopyLock takes the lock continueSession/migrateSession hold while
 // adding a transcript to toEmail's profile. Shared, not exclusive: adding a
@@ -1031,31 +1009,25 @@ func newSessionCommand() *cobra.Command {
 		},
 	}
 	session.AddCommand(&cobra.Command{
-		Use:                "continue [FROM_EMAIL TO_EMAIL] [--] [CLAUDE ARGUMENTS...]",
+		Use:                "continue [FROM_EMAIL TO_EMAIL -- --resume SESSION_ID [CLAUDE ARGUMENTS...]]",
 		Short:              "Move a Claude session to another account and resume it",
 		DisableFlagParsing: true,
-		Long: "Copy every Claude session transcript recorded for the current directory from " +
-			"FROM_EMAIL's cpro profile into TO_EMAIL's (adding only; nothing is deleted or " +
-			"overwritten), then immediately run Claude under TO_EMAIL with --resume so you " +
-			"pick the exact conversation from Claude's own list, previews included. Meant " +
-			"for picking up a conversation that hit FROM_EMAIL's usage limit under a " +
-			"different account without guessing a session ID by hand.\n" +
-			"Any arguments after FROM_EMAIL and TO_EMAIL (optionally after a --) are forwarded " +
-			"to Claude alongside --resume, e.g. --dangerously-skip-permissions. If the forwarded " +
-			"arguments already include --resume SESSION_ID, only that one session is copied (from " +
-			"whichever directory it was recorded in) and Claude is started in that directory, " +
-			"resuming it directly instead of showing its own list.\n" +
+		Long: "Copy one recorded Claude session from FROM_EMAIL's cpro profile into TO_EMAIL's " +
+			"(adding only; nothing is deleted or overwritten), then run Claude under TO_EMAIL in the " +
+			"directory the session was recorded in, resuming it directly. Meant for picking up a " +
+			"conversation that hit FROM_EMAIL's usage limit under a different account.\n" +
+			"Name the session with --resume SESSION_ID after FROM_EMAIL and TO_EMAIL (cpro session " +
+			"list shows the IDs); any further arguments are forwarded to Claude too, e.g. " +
+			"--dangerously-skip-permissions.\n" +
 			"Called with no arguments at all (from a terminal), this opens an interactive picker " +
-			"instead (decision 0025): pick a recorded session, then a destination account, and " +
-			"the exact same copy-and-resume flow above runs with --resume SESSION_ID already " +
-			"filled in — FROM_EMAIL/TO_EMAIL stay required for this non-interactive form either way.",
+			"instead: pick a recorded session, then any account, and it resumes there.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 				return cmd.Help()
 			}
 			if len(args) == 0 {
 				if !terminalInput() || !terminalOutput(cmd.ErrOrStderr()) {
-					return fmt.Errorf("picking a session interactively requires a terminal; run cpro session continue FROM_EMAIL TO_EMAIL instead")
+					return fmt.Errorf("picking a session interactively requires a terminal; run cpro session continue FROM_EMAIL TO_EMAIL -- --resume SESSION_ID instead (cpro session list shows the IDs)")
 				}
 				s, err := openStore()
 				if err != nil {
@@ -1100,19 +1072,14 @@ func newSessionCommand() *cobra.Command {
 				return err
 			}
 			cmd.Println(accent(cmd.OutOrStdout(), fmt.Sprintf("Copied %d session file(s) to %s", copied, to), accentMode))
-			// A named session resumes from the directory it was recorded in,
-			// exactly as `cpro --resume` does — Claude looks a session up
-			// by the working directory it is started from.
-			if id := resumeSessionIDArg(extra); id != "" {
-				if dirName, err := findSessionDir(s, from, id); err == nil {
-					restoreSessionDirectory(s, from, dirName, id)
-				}
+			// Resume from the directory the session was recorded in, exactly as
+			// `cpro --resume` does — Claude looks a session up by the working
+			// directory it is started from.
+			id := resumeSessionIDArg(extra)
+			if dirName, err := findSessionDir(s, from, id); err == nil {
+				restoreSessionDirectory(s, from, dirName, id)
 			}
-			forwarded := extra
-			if !hasArg(extra, "--resume") {
-				forwarded = append([]string{"--resume"}, extra...)
-			}
-			return s.run(to, forwarded)
+			return s.run(to, extra)
 		},
 	})
 	var sessionListJSON bool

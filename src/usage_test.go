@@ -340,3 +340,43 @@ func TestOAuthRefresh(t *testing.T) {
 		}
 	})
 }
+
+// TestCheckOAuthRefreshCompat covers doctor's "Token renewal" check (decision
+// 0068): both of cpro's copied Claude Code values are found in the executable
+// — through a symlink, and even when one straddles the 4MB read boundary —
+// and a missing one is named.
+func TestCheckOAuthRefreshCompat(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, data []byte) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, 0755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// The token URL straddles the end of the first read (4MB plus the overlap
+	// the scan keeps); the client ID sits after it.
+	firstRead := 4<<20 + max(len(oauthTokenURL), len(oauthClientID)) - 1
+	data := bytes.Repeat([]byte{'x'}, firstRead-10)
+	data = append(data, []byte(oauthTokenURL)...)
+	data = append(data, bytes.Repeat([]byte{'y'}, 100)...)
+	data = append(data, []byte(oauthClientID)...)
+	real := write("claude-real", data)
+	link := filepath.Join(dir, "claude")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkOAuthRefreshCompat(link); err != nil {
+		t.Fatalf("expected both values found through the symlink: %v", err)
+	}
+
+	onlyURL := write("claude-old", []byte("…"+oauthTokenURL+"…"))
+	err := checkOAuthRefreshCompat(onlyURL)
+	if err == nil || !strings.Contains(err.Error(), "client ID") || strings.Contains(err.Error(), "token URL") {
+		t.Fatalf("expected only the client ID reported missing, got %v", err)
+	}
+	if err := checkOAuthRefreshCompat(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("expected an error for a missing executable")
+	}
+}

@@ -4038,21 +4038,21 @@ func TestRootPicker(t *testing.T) {
 		if out := stripANSI(capture()); !strings.Contains(out, "Esc² to exit") {
 			t.Fatalf("expected the launcher's own footer (\"Esc to exit\") after backing out of the full palette, got %q", out)
 		}
-		// Prove this is genuinely the launcher's own (short) entry list again,
-		// not merely a stale frame still on screen: from a freshly reset
-		// cursor on "run", three Downs only reaches "menu" on the 4-item
-		// launcher (they'd reach "login" on the 14-item full palette).
-		// Re-entering it should reopen the full palette exactly as before.
-		down(master)
-		down(master)
-		down(master)
+		// Prove this is genuinely the launcher again, not a stale frame: the
+		// restored frame keeps its cursor on "menu", so Enter reopens the full
+		// palette. This used to press Down three times first, assuming a reset
+		// cursor — which wrapped to "status" and ran it, while the check below
+		// still passed on the FIRST palette's text in the cumulative capture.
+		// So: the palette's own rows must paint a second time, and the process
+		// must still be alive (running a command would have ended it).
+		before := strings.Count(stripANSI(capture()), "doctor")
 		enter(master)
 		time.Sleep(300 * time.Millisecond)
-		out := stripANSI(capture())
-		for _, want := range []string{"login", "config", "doctor"} {
-			if !strings.Contains(out, want) {
-				t.Fatalf("expected re-entering \"menu\" from the launcher to reopen the full palette (missing %q), got %q", want, out)
-			}
+		if got := strings.Count(stripANSI(capture()), "doctor"); got <= before {
+			t.Fatalf("expected re-entering \"menu\" to paint the full palette again (doctor rows %d -> %d)", before, got)
+		}
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			t.Fatalf("re-entering the palette must not run a command: %v", err)
 		}
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -5953,7 +5953,7 @@ func TestEmailMaskingIdentityIntegrity(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(srcSessions, sessionID+".jsonl"), []byte(`{"type":"user"}`+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		run(t, 0, projectDir, "session", "continue", emailA, emailB)
+		run(t, 0, projectDir, "session", "continue", emailA, emailB, "--", "--resume", sessionID)
 		dst := filepath.Join(s.profile(emailB), "projects", dirName, sessionID+".jsonl")
 		if _, err := os.Stat(dst); err != nil {
 			t.Fatalf("expected the transcript under the real destination account's profile, got %v", err)
@@ -9502,28 +9502,37 @@ func TestSessionContinue(t *testing.T) {
 	}
 
 	t.Run("missing accounts are rejected", func(t *testing.T) {
-		_, stderr := run(t, 1, projectDir, "session", "continue", "nobody@example.com", "session-to@example.com")
+		_, stderr := run(t, 1, projectDir, "session", "continue", "nobody@example.com", "session-to@example.com", "--", "--resume", sessionID)
 		if !strings.Contains(stderr, "not registered") {
 			t.Fatalf("expected a missing-account error, got %q", stderr)
 		}
 	})
 
-	t.Run("no session history for this directory", func(t *testing.T) {
-		other := t.TempDir()
-		_, stderr := run(t, 1, other, "session", "continue", "session-from@example.com", "session-to@example.com")
+	t.Run("without a session ID it names the two ways to pick one, copying nothing", func(t *testing.T) {
+		_, stderr := run(t, 1, projectDir, "session", "continue", "session-from@example.com", "session-to@example.com")
+		if !strings.Contains(stderr, "--resume SESSION_ID") || !strings.Contains(stderr, "no arguments") {
+			t.Fatalf("expected the name-the-session error (decision 0069), got %q", stderr)
+		}
+		if _, err := os.Stat(filepath.Join(s.profile("session-to@example.com"), "projects", dirName)); !os.IsNotExist(err) {
+			t.Fatalf("nothing may be copied without a session ID: %v", err)
+		}
+	})
+
+	t.Run("an unknown session ID is rejected", func(t *testing.T) {
+		_, stderr := run(t, 1, projectDir, "session", "continue", "session-from@example.com", "session-to@example.com", "--", "--resume", "no-such-session")
 		if !strings.Contains(stderr, "no Claude session history") {
 			t.Fatalf("expected a no-history error, got %q", stderr)
 		}
 	})
 
-	t.Run("copies transcripts and resumes under the target account", func(t *testing.T) {
-		out, _ := run(t, 0, projectDir, "session", "continue", "session-from@example.com", "session-to@example.com")
+	t.Run("copies the named session and resumes it under the target account, from any directory", func(t *testing.T) {
+		out, _ := run(t, 0, t.TempDir(), "session", "continue", "session-from@example.com", "session-to@example.com", "--", "--resume", sessionID)
 		lines := strings.SplitN(out, "\n", 2)
 		if !strings.Contains(lines[0], "Copied 1 session file(s) to session-to@example.com") {
 			t.Fatalf("expected a copy confirmation, got %q", out)
 		}
-		if len(lines) < 2 || !strings.Contains(lines[1], `"--resume"`) {
-			t.Fatalf("expected claude to be invoked with --resume, got %q", out)
+		if len(lines) < 2 || !strings.Contains(lines[1], `"--resume"`) || !strings.Contains(lines[1], sessionID) {
+			t.Fatalf("expected claude to be invoked with --resume SESSION_ID, got %q", out)
 		}
 
 		dst := filepath.Join(s.profile("session-to@example.com"), "projects", dirName, sessionID+".jsonl")
@@ -9547,7 +9556,7 @@ func TestSessionContinue(t *testing.T) {
 	})
 
 	t.Run("re-running does not overwrite or duplicate the copy", func(t *testing.T) {
-		out, _ := run(t, 0, projectDir, "session", "continue", "session-from@example.com", "session-to@example.com")
+		out, _ := run(t, 0, projectDir, "session", "continue", "session-from@example.com", "session-to@example.com", "--", "--resume", sessionID)
 		if !strings.Contains(out, "Copied 0 session file(s)") {
 			t.Fatalf("expected nothing new to copy on a second run, got %q", out)
 		}
@@ -10831,14 +10840,15 @@ func TestSessionUI(t *testing.T) {
 		}
 		// Re-entering session from the restored MENU frame proves the stack was
 		// genuinely popped back to the real MENU frame, not just a stale-looking
-		// render — the usual presence-only-can't-prove-a-pop workaround.
-		for range 5 {
-			down(master)
-		}
+		// render. The restored frame keeps its cursor on "session", so → alone
+		// re-enters — five more Downs (as this used to do) land on a leaf row
+		// where → does nothing, and the old check still passed on the first
+		// visit's title. SESSIONS is its own program with a fresh screen, so a
+		// real re-entry paints its full title a second time.
 		right(master)
 		time.Sleep(300 * time.Millisecond)
 		out = stripANSI(capture())
-		if !strings.Contains(out, "claude cpro - SESSIONS") {
+		if strings.Count(out, "claude cpro - SESSIONS") < 2 {
 			t.Fatalf("expected to re-enter SESSIONS from the restored MENU, got %q", out)
 		}
 		esc(master)

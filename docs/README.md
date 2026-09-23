@@ -64,14 +64,14 @@ cpro run                     # or run non-interactively
 | `cpro run [--account EMAIL] [-- CLAUDE ARGS]` | launch Claude Code |
 | `cpro --resume ID` / `-r ID [--account EMAIL]` | resume a specific session |
 | `cpro session` | sessions menu |
-| `cpro session continue [FROM TO] [-- CLAUDE ARGS]` | move a session to another account and resume it |
+| `cpro session continue [FROM TO -- --resume ID]` | move a session to another account and resume it (no arguments: pick it) |
 | `cpro session list [--json]` | list every recorded session |
 | `cpro session delete ID... [--yes] [--account EMAIL]` | permanently delete session transcripts |
 | `cpro system export [EMAIL]` | send a cpro account's credentials to the system `claude` |
 | `cpro system import` | pull the system `claude`'s credentials into cpro |
 | `cpro config [--json]` | show, or interactively edit, preferences |
 | `cpro default` | interactively set run defaults: permission mode, workspace trust, account |
-| `cpro doctor` | diagnostic checks |
+| `cpro doctor` | diagnostic checks, including that token renewal still matches the installed Claude Code |
 | `cpro install` | copy this binary to `~/.local/bin/cpro` |
 | `cpro info` | read-only installation snapshot |
 | `cpro version` | print the version |

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -68,6 +69,11 @@ func runDoctorChecks() []doctorCheck {
 		} else {
 			checks = append(checks, doctorCheck{Name: "Claude Code", Detail: strings.TrimSpace(string(output))})
 		}
+		if err := checkOAuthRefreshCompat(path); err != nil {
+			checks = append(checks, doctorCheck{Name: "Token renewal", Err: err})
+		} else {
+			checks = append(checks, doctorCheck{Name: "Token renewal", Detail: "matches the installed Claude Code"})
+		}
 	}
 	if err := checkNetwork("https://api.anthropic.com/"); err != nil {
 		checks = append(checks, doctorCheck{Name: "Anthropic network", Err: err})
@@ -105,6 +111,62 @@ func runDoctorChecks() []doctorCheck {
 		checks = append(checks, doctorCheck{Name: displayEmail(email), Detail: "authenticated", Err: authErr})
 	}
 	return checks
+}
+
+// checkOAuthRefreshCompat verifies that the installed Claude Code still uses
+// the token URL and client ID cpro's own token renewal copies from it
+// (oauth.go, decision 0066) — the one place cpro depends on another program's
+// undocumented internals. It looks for both strings in the claude executable
+// itself (symlinks resolved: the native install is a link into a versions/
+// directory; an npm install resolves to its bundled cli.js, which carries the
+// same config), read in chunks since the native binary is hundreds of MB.
+// When either is missing, renewal would fail safely — nothing written, idle
+// accounts shown as "token expired" — but silently; this is what makes it
+// visible before that happens.
+func checkOAuthRefreshCompat(path string) error {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(real)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	needles := [][]byte{[]byte(oauthTokenURL), []byte(oauthClientID)}
+	found := make([]bool, len(needles))
+	overlap := 0
+	for _, n := range needles {
+		overlap = max(overlap, len(n)-1)
+	}
+	buf := make([]byte, 4<<20+overlap)
+	carry := 0
+	for {
+		n, readErr := f.Read(buf[carry:])
+		window := buf[:carry+n]
+		all := true
+		for i, needle := range needles {
+			found[i] = found[i] || bytes.Contains(window, needle)
+			all = all && found[i]
+		}
+		if all {
+			return nil
+		}
+		if readErr != nil {
+			break
+		}
+		// Keep the tail, so a string split across two reads is still found.
+		carry = min(overlap, len(window))
+		copy(buf, window[len(window)-carry:])
+	}
+	var missing []string
+	if !found[0] {
+		missing = append(missing, "token URL")
+	}
+	if !found[1] {
+		missing = append(missing, "client ID")
+	}
+	return fmt.Errorf("the installed Claude Code no longer uses cpro's %s; idle accounts' tokens can't be renewed until cpro is updated", strings.Join(missing, " and "))
 }
 
 // claudePath resolves the claude executable in PATH — the one lookup both
