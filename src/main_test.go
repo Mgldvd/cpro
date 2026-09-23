@@ -1620,13 +1620,13 @@ func TestNavigationHierarchy(t *testing.T) {
 // fragmentation), which makes a title string an unreliable thing to grep for
 // in a cumulative pty capture. A direct render sidesteps that entirely.
 func TestScreenTitles(t *testing.T) {
-	root := &rootPickerApp{shades: deriveAccentShades("#A78BFA", 5)}
+	root := &rootPickerApp{}
 	root.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList([]rootPickerEntry{{name: "run"}})})
 	if got := root.viewNormal(); !strings.Contains(got, "╭─ claude cpro\n") {
 		t.Fatalf("expected the bare root title with no suffix, got %q", got)
 	}
 
-	menu := &rootPickerApp{shades: deriveAccentShades("#A78BFA", 5)}
+	menu := &rootPickerApp{}
 	menu.stack = newNavStack(rootFrame{kind: frameList, title: "MENU", list: newCommandBrowseList([]rootPickerEntry{{name: "config"}})})
 	if got := menu.viewNormal(); !strings.Contains(got, "╭─ claude cpro - MENU") {
 		t.Fatalf("expected the Menu title, got %q", got)
@@ -1828,7 +1828,7 @@ func TestRootPickerExitArmed(t *testing.T) {
 		root.InitDefaultHelpCmd()
 		root.InitDefaultCompletionCmd()
 		entries := rootPickerFilteredEntries(root, rootMenuNames())
-		m := &rootPickerApp{color: true, shades: deriveAccentShades("#A78BFA", 5)}
+		m := &rootPickerApp{color: true}
 		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(entries)})
 		return m
 	}
@@ -1926,16 +1926,13 @@ func TestRootPickerExitArmed(t *testing.T) {
 		if !strings.Contains(armed, "╭─ claude cpro") {
 			t.Fatalf("expected the rail's top edge to be recolored (still-styled \"╭─ claude cpro\" segment) while armed, got %q", armed)
 		}
-		// Both signals fire together: the rail/both edges turn solid Danger
-		// red (see railShade), on top of the footer's own "Esc¹ again".
-		// Only shades[:len-1] are checked for absence: deriveAccentShades'
-		// last shade is accentMode itself unchanged, the same color the
-		// cursor legitimately keeps using while armed — indistinguishable
-		// from a "leaked" shade by a plain color search, unlike shades 0-3.
-		for _, shade := range m.shades[:len(m.shades)-1] {
-			if strings.Contains(armed, ansiTrueColor(t, shade)) {
-				t.Fatalf("expected no gradient shade (%s) to survive on the rail while armed, got %q", shade, armed)
-			}
+		// Both signals fire together: the rail and both edges turn solid Danger
+		// (see railColor), on top of the footer's own "Esc¹ again". The top
+		// edge is the one line carrying no cursor, so the Accent color must be
+		// gone from it entirely while armed.
+		topEdge := strings.SplitN(armed, "\n", 2)[0]
+		if strings.Contains(topEdge, ansiTrueColor(t, accentMode)) || !strings.Contains(topEdge, warnRGB) {
+			t.Fatalf("expected the top edge in Danger, not Accent, while armed, got %q", topEdge)
 		}
 
 		m.updateNormal(downKey) // cancel
@@ -1943,8 +1940,8 @@ func TestRootPickerExitArmed(t *testing.T) {
 		if strings.Contains(after, warnRGB) {
 			t.Fatalf("expected no danger red once the arm is cancelled, got %q", after)
 		}
-		if !strings.Contains(after, ansiTrueColor(t, m.shades[0])) {
-			t.Fatalf("expected the normal gradient to return after cancelling, got %q", after)
+		if !strings.Contains(strings.SplitN(after, "\n", 2)[0], ansiTrueColor(t, accentMode)) {
+			t.Fatalf("expected the solid Accent rail to return after cancelling, got %q", after)
 		}
 		if !strings.Contains(stripANSI(after), "Esc² to exit") {
 			t.Fatalf("expected the normal footer to return after cancelling, got %q", after)
@@ -2074,7 +2071,7 @@ func TestRootPickerEntries(t *testing.T) {
 		if want := wantGroup[e.name]; e.group != want {
 			t.Fatalf("%s: group = %q, want %q", e.name, e.group, want)
 		}
-		for _, group := range rootGroups {
+		for _, group := range []string{"Core", "Account", "Settings", "System", "About"} {
 			if e.name == group {
 				t.Fatalf("group label %q leaked into a selectable entry's name: %+v", group, entries)
 			}
@@ -2212,7 +2209,7 @@ func TestAccountArgCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	newModel := func() *rootPickerApp {
-		m := &rootPickerApp{s: s, color: false, shades: deriveAccentShades("#A78BFA", 5)}
+		m := &rootPickerApp{s: s, color: false}
 		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(rootPickerEntries)})
 		return m
 	}
@@ -2453,7 +2450,7 @@ func TestAccountArgCommands(t *testing.T) {
 // tea.Quit) and print the reason afterwards.
 func TestPickerInlineErrors(t *testing.T) {
 	t.Run("root picker shows a frame-open failure inline and stays open", func(t *testing.T) {
-		m := &rootPickerApp{s: &store{dir: t.TempDir()}, color: false, shades: deriveAccentShades("#A78BFA", 5)}
+		m := &rootPickerApp{s: &store{dir: t.TempDir()}, color: false}
 		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(rootPickerEntries)})
 		_, cmd := m.activateEntry(rootPickerEntry{name: "logout"})
 		if cmd != nil {
@@ -2512,7 +2509,7 @@ func TestInteractiveRunFlow(t *testing.T) {
 	}
 
 	newModel := func() *rootPickerApp {
-		m := &rootPickerApp{s: s, color: false, shades: deriveAccentShades("#A78BFA", 5)}
+		m := &rootPickerApp{s: s, color: false}
 		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(rootPickerEntries)})
 		return m
 	}
@@ -2796,7 +2793,7 @@ func TestRunAccountUsage(t *testing.T) {
 		seedUsageCache(t, s, email, session)
 	}
 	newModel := func() *rootPickerApp {
-		m := &rootPickerApp{s: s, color: false, shades: deriveAccentShades("#A78BFA", 5)}
+		m := &rootPickerApp{s: s, color: false}
 		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(rootPickerEntries)})
 		return m
 	}
@@ -3270,7 +3267,7 @@ func TestWatchModeFlow(t *testing.T) {
 		root.InitDefaultHelpCmd()
 		root.InitDefaultCompletionCmd()
 		entries := rootPickerFilteredEntries(root, rootLauncherNames)
-		m := &rootPickerApp{root: root, shades: deriveAccentShades("#A78BFA", 5)}
+		m := &rootPickerApp{root: root}
 		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(entries)})
 		return m
 	}
@@ -3647,53 +3644,6 @@ func TestRootPickerRefilter(t *testing.T) {
 	}
 }
 
-// TestDeriveAccentShades covers tui.go's shared gradient helper directly:
-// shade count, a monotonic dark-to-light progression that lands exactly on
-// the input accent color at the brightest end, and that different accent
-// colors (Purple vs. Blue vs. Rose) produce entirely different — but each
-// internally consistent — shade sets, rather than one hardcoded palette.
-func TestDeriveAccentShades(t *testing.T) {
-	brightness := func(hex string) int {
-		var r, g, b int
-		if _, err := fmt.Sscanf(hex, "#%02X%02X%02X", &r, &g, &b); err != nil {
-			t.Fatalf("not a #RRGGBB color: %q: %v", hex, err)
-		}
-		return r + g + b
-	}
-
-	for _, accent := range []string{"#A78BFA", "#60A5FA", "#FB7185"} {
-		shades := deriveAccentShades(accent, 5)
-		if len(shades) != 5 {
-			t.Fatalf("%s: expected 5 shades, got %d: %v", accent, len(shades), shades)
-		}
-		if shades[4] != accent {
-			t.Fatalf("%s: brightest/last shade should be the accent color itself unchanged, got %q", accent, shades[4])
-		}
-		seen := map[string]bool{}
-		for i, s := range shades {
-			if seen[s] {
-				t.Fatalf("%s: shade %d (%q) duplicates an earlier shade: %v", accent, i, s, shades)
-			}
-			seen[s] = true
-			if i > 0 && brightness(shades[i-1]) >= brightness(s) {
-				t.Fatalf("%s: shades should strictly brighten from index 0 to 4, got %v", accent, shades)
-			}
-		}
-	}
-
-	purple := deriveAccentShades("#A78BFA", 5)
-	blue := deriveAccentShades("#60A5FA", 5)
-	for i := range purple {
-		if purple[i] == blue[i] {
-			t.Fatalf("Purple and Blue should never produce the same shade at index %d: %q", i, purple[i])
-		}
-	}
-
-	if got := deriveAccentShades("#A78BFA", 1); len(got) != 1 || got[0] != "#A78BFA" {
-		t.Fatalf("n<=1 should return the accent color unchanged, got %v", got)
-	}
-}
-
 // TestRootRowResponsive covers rootRow's metadata degradation directly (no
 // pty needed): full metadata at ample width, a truncated "…" form once
 // space is tight, and no metadata at all — never a lone ellipsis — once
@@ -3876,18 +3826,16 @@ func TestRootRowPermissionsColoredDot(t *testing.T) {
 // scrolls past either end of the list.
 func TestVisibleWindow(t *testing.T) {
 	lines := make([]string, 20)
-	hex := make([]string, 20)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line%d", i)
-		hex[i] = "#000000"
 	}
 
-	if got, _ := scrollLines(0, rootChromeLines, lines, hex, 19); len(got) != len(lines) {
+	if got := scrollLines(0, rootChromeLines, lines, 19); len(got) != len(lines) {
 		t.Fatalf("unknown height should show everything, got %d of %d lines", len(got), len(lines))
 	}
 
 	// taller than the list: still no scrolling needed
-	if got, _ := scrollLines(rootChromeLines+25, rootChromeLines, lines, hex, 5); len(got) != len(lines) {
+	if got := scrollLines(rootChromeLines+25, rootChromeLines, lines, 5); len(got) != len(lines) {
 		t.Fatalf("a tall enough terminal should show everything, got %d of %d lines", len(got), len(lines))
 	}
 
@@ -3901,18 +3849,14 @@ func TestVisibleWindow(t *testing.T) {
 		}
 		return false
 	}
-	if got, gotHex := scrollLines(height, rootChromeLines, lines, hex, 0); len(got) != 5 || !contains(got, "line0") {
-		t.Fatalf("cursor at the top should keep the window at the top, got %v (hex len %d)", got, len(gotHex))
+	if got := scrollLines(height, rootChromeLines, lines, 0); len(got) != 5 || !contains(got, "line0") {
+		t.Fatalf("cursor at the top should keep the window at the top, got %v", got)
 	}
-	if got, _ := scrollLines(height, rootChromeLines, lines, hex, 19); len(got) != 5 || !contains(got, "line19") {
+	if got := scrollLines(height, rootChromeLines, lines, 19); len(got) != 5 || !contains(got, "line19") {
 		t.Fatalf("cursor at the bottom should keep the window at the bottom, got %v", got)
 	}
-	if got, _ := scrollLines(height, rootChromeLines, lines, hex, 10); len(got) != 5 || !contains(got, "line10") {
+	if got := scrollLines(height, rootChromeLines, lines, 10); len(got) != 5 || !contains(got, "line10") {
 		t.Fatalf("cursor in the middle should still be inside the window, got %v", got)
-	}
-	// lineHex must stay in lockstep with lines (same slice bounds).
-	if got, gotHex := scrollLines(height, rootChromeLines, lines, hex, 10); len(got) != len(gotHex) {
-		t.Fatalf("lines and lineHex should have the same length: %d vs %d", len(got), len(gotHex))
 	}
 }
 
@@ -4782,14 +4726,11 @@ func ansiTrueColor(t *testing.T, hex string) string {
 	return fmt.Sprintf("%d;%d;%d", r, g, b)
 }
 
-// TestRootPickerGradient covers the redesign's color-specific requirements
-// that TestRootPicker (plain-text, stripANSI'd) can't: the five-shade
-// semantic-group rail actually derives from the configured Accent color (and
-// updates when that preference changes), the cursor always uses the plain
-// Accent color rather than its row's group shade, the panel's opening/
-// closing rail use the first/last shade, and search mode collapses back to
-// one uniform Accent color instead of the five-shade gradient.
-func TestRootPickerGradient(t *testing.T) {
+// TestRootPickerRailColor covers decision 0067: the picker's rail — every
+// "│", both panel edges, the search line — is one solid Accent color in
+// browsing and search alike (it was a five-shade per-group gradient), follows
+// the configured Accent, and the cursor keeps that same Accent color.
+func TestRootPickerRailColor(t *testing.T) {
 	bin, _ := buildCLI(t)
 
 	// launch starts the picker and sends each element of keys as one atomic
@@ -4852,143 +4793,73 @@ func TestRootPickerGradient(t *testing.T) {
 		return last
 	}
 
-	t.Run("five shades derived from the default Accent (Purple)", func(t *testing.T) {
-		out := launch(t, 120)
-		shades := deriveAccentShades("#A78BFA", 5) // ui.go's default accentMode
-		rgb := func(i int) string { return ansiTrueColor(t, shades[i]) }
+	// railRGBs returns the distinct foreground colors on the rail runes of a
+	// render — the "╭─"/"╰─" edges and every "│" — which must be exactly one.
+	railRGBs := func(t *testing.T, out string) map[string]bool {
+		t.Helper()
+		re := regexp.MustCompile(`38;2;(\d+;\d+;\d+)m(?:╭─|╰─|│)`)
+		seen := map[string]bool{}
+		for _, m := range re.FindAllStringSubmatch(out, -1) {
+			seen[m[1]] = true
+		}
+		return seen
+	}
+	purple := "#A78BFA" // ui.go's default accentMode
 
-		if !strings.Contains(lineFor(out, "╭─"), rgb(0)) {
-			t.Fatalf("╭─ should use shade 0 (%s), got %q", shades[0], lineFor(out, "╭─"))
+	t.Run("the rail is one solid Accent color across every group", func(t *testing.T) {
+		out := launch(t, 120)
+		got := railRGBs(t, out)
+		if len(got) != 1 || !got[ansiTrueColor(t, purple)] {
+			t.Fatalf("expected every rail rune in the Accent color only, got %v", got)
 		}
-		if !strings.Contains(lineFor(out, "╰─"), rgb(4)) {
-			t.Fatalf("╰─ should use shade 4 (%s), got %q", shades[4], lineFor(out, "╰─"))
-		}
-		for name, shadeIdx := range map[string]int{
-			"config": 0,              // Core
-			"login":  1, "remove": 1, // Account
-			"system": 2, "doctor": 2, // Settings
-			"install": 3, "completion": 3, // System
-			"help": 4, "version": 4, // About
-		} {
+		for _, name := range []string{"config", "login", "system", "install", "help"} { // one row per former group
 			line := lineFor(out, " "+name+" ")
 			if line == "" {
-				line = lineFor(out, "❯ "+name+" ") // the default "config" row also carries the cursor
+				line = lineFor(out, "❯ "+name+" ")
 			}
-			if !strings.Contains(line, rgb(shadeIdx)) {
-				t.Fatalf("%s: expected shade %d (%s) on its row, got %q", name, shadeIdx, shades[shadeIdx], line)
+			if !strings.Contains(line, ansiTrueColor(t, purple)) {
+				t.Fatalf("%s: expected its rail in the Accent color, got %q", name, line)
 			}
-		}
-
-		// The cursor itself (on "config", a Core/shade-0 row) must use the plain
-		// Accent color (shade 4, the last one — see deriveAccentShades), not
-		// shade 0, even though the rest of that same row's rail is shade 0.
-		configLine := lineFor(out, "❯ config")
-		if !strings.Contains(configLine, rgb(4)) {
-			t.Fatalf("the cursor should render in the main Accent color, got %q", configLine)
-		}
-		if strings.Count(configLine, rgb(0)) != 1 {
-			t.Fatalf("expected exactly one shade-0 escape on config's row (the rail, not the cursor), got %q", configLine)
 		}
 	})
 
-	// Rendered directly (m.cursor set to login's index) rather than driven
-	// live through a pty: bubbletea's diffing renderer only rewrites what
-	// actually changed between frames (see TestRootPicker's own doc comment
-	// on this — a cursor move may only touch a couple of cells, never
-	// retransmitting the full destination row), so a cumulative pty capture
-	// can't reliably prove what color a NON-default row's cursor ends up in.
-	// A fresh, single viewNormal() call sidesteps that entirely.
-	t.Run("cursor keeps the main Accent color on a different group's row", func(t *testing.T) {
+	t.Run("cursor and rail share the Accent color; search keeps it", func(t *testing.T) {
 		root := rootCommand()
 		root.InitDefaultHelpCmd()
 		root.InitDefaultCompletionCmd()
 		entries := rootPickerFilteredEntries(root, rootMenuNames())
-		loginIdx := -1
+		m := &rootPickerApp{color: true}
+		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(entries)})
 		for i, e := range entries {
 			if e.name == "login" {
-				loginIdx = i
+				m.stack.current().list.cursor = i
 			}
 		}
-		if loginIdx < 0 {
-			t.Fatal("login not found in the picker's entries")
+		accentRGB := ansiTrueColor(t, accentMode)
+		if got := railRGBs(t, m.viewNormal()); len(got) != 1 || !got[accentRGB] {
+			t.Fatalf("browsing: expected one rail color, the Accent, got %v", got)
 		}
-		shades := deriveAccentShades("#A78BFA", 5)
-		m := &rootPickerApp{color: true, shades: shades}
-		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(entries)})
-		m.stack.current().list.cursor = loginIdx
-		loginLine := lineFor(m.viewNormal(), "❯ login")
-		if loginLine == "" {
-			t.Fatalf("expected a rendered ❯ login row, got %q", m.viewNormal())
+		if loginLine := lineFor(m.viewNormal(), "❯ login"); !strings.Contains(loginLine, accentRGB) {
+			t.Fatalf("the cursor should render in the Accent color, got %q", loginLine)
 		}
-		if !strings.Contains(loginLine, ansiTrueColor(t, shades[4])) {
-			t.Fatalf("the cursor on login (Account, shade 1) should still render in the main Accent (shade 4): %q", loginLine)
-		}
-		if !strings.Contains(loginLine, ansiTrueColor(t, shades[1])) {
-			t.Fatalf("login's own rail should still be shade 1 (Account), got %q", loginLine)
-		}
-	})
-
-	t.Run("search mode uses one Accent color, not the five-shade gradient", func(t *testing.T) {
-		// A direct, single render (like the "cursor keeps the main Accent
-		// color" subtest just above), not a live pty: going from browsing to
-		// search collapses a row's rail from its group shade to plain accent
-		// while its glyph position can stay the same, which is exactly the
-		// same-cell, style-only diff bubbletea's renderer may leave to a
-		// cursor-positioned partial rewrite rather than reissuing a fresh
-		// color escape — confirmed live, a cumulative pty capture picked up
-		// a "completion" row with no color escape at all (inheriting
-		// whatever SGR state the previous row's reset left behind), not a
-		// rendering bug in rootRow/viewSearch itself. See TestRootPicker's
-		// own doc comment for the general rule this follows.
-		root := rootCommand()
-		root.InitDefaultHelpCmd()
-		root.InitDefaultCompletionCmd()
-		entries := rootPickerFilteredEntries(root, rootMenuNames())
-		shades := deriveAccentShades("#A78BFA", 5)
-		m := &rootPickerApp{color: true, shades: shades}
-		m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(entries)})
 		m.stack.current().list.query = "co"
 		m.stack.current().list.refilter()
-		out := m.viewSearch()
-		configLine := lineFor(out, "config")
-		completionLine := lineFor(out, "completion")
-		accentRGB := ansiTrueColor(t, shades[4])
-		for _, line := range []string{configLine, completionLine} {
-			if !strings.Contains(line, accentRGB) {
-				t.Fatalf("search-mode row should use the main Accent color, got %q", line)
-			}
-		}
-		// config and completion sit in different groups (shade 2 and shade 3)
-		// in normal mode — neither of those group shades should appear at
-		// all while search is active.
-		for _, shadeIdx := range []int{1, 2, 3} { // Account, Settings, System — none of which is the main Accent
-			shadeRGB := ansiTrueColor(t, shades[shadeIdx])
-			if shadeRGB == accentRGB {
-				continue
-			}
-			if strings.Contains(configLine, shadeRGB) || strings.Contains(completionLine, shadeRGB) {
-				t.Fatalf("search mode should not show any group rail shade (%s), got config=%q completion=%q", shades[shadeIdx], configLine, completionLine)
-			}
+		if got := railRGBs(t, m.viewSearch()); len(got) != 1 || !got[accentRGB] {
+			t.Fatalf("search: expected one rail color, the Accent, got %v", got)
 		}
 	})
 
 	// Last, deliberately: this permanently changes the isolated test config's
 	// Accent to Blue, which every earlier subtest above assumes is still the
 	// default Purple.
-	t.Run("changing Accent changes the picker's gradient", func(t *testing.T) {
+	t.Run("changing Accent changes the rail color", func(t *testing.T) {
 		set := exec.Command(bin, "config", "accent", "blue")
 		if out, err := set.CombinedOutput(); err != nil {
 			t.Fatalf("cpro config accent blue: %v: %s", err, out)
 		}
 		out := launch(t, 120)
-		purpleShades := deriveAccentShades("#A78BFA", 5)
-		blueShades := deriveAccentShades("#60A5FA", 5)
-		top := lineFor(out, "╭─")
-		if strings.Contains(top, ansiTrueColor(t, purpleShades[0])) {
-			t.Fatalf("still showing the old Purple-derived shade after switching Accent to Blue: %q", top)
-		}
-		if !strings.Contains(top, ansiTrueColor(t, blueShades[0])) {
-			t.Fatalf("expected ╭─ to reflect the newly configured Blue accent, got %q", top)
+		if got := railRGBs(t, out); len(got) != 1 || !got[ansiTrueColor(t, "#60A5FA")] {
+			t.Fatalf("expected the whole rail in the newly configured Blue accent, got %v", got)
 		}
 	})
 }
@@ -5136,7 +5007,7 @@ func TestWatchModePickerEndToEnd(t *testing.T) {
 			time.Sleep(300 * time.Millisecond)
 			enter(master) // Full is the default selection
 		})
-		if !strings.Contains(out, "claude cpro - WATCH MODE") {
+		if !strings.Contains(out, "WATCH MODE") {
 			t.Fatalf("expected WATCH MODE to have opened, got %q", out)
 		}
 		if !strings.Contains(out, "╭─ watch-mode@example.com") {
@@ -5151,7 +5022,7 @@ func TestWatchModePickerEndToEnd(t *testing.T) {
 			down(master) // Full -> Compact
 			right(master)
 		})
-		if !strings.Contains(out, "claude cpro - WATCH MODE") {
+		if !strings.Contains(out, "WATCH MODE") {
 			t.Fatalf("expected WATCH MODE to have opened, got %q", out)
 		}
 		if strings.Contains(out, "╭─ watch-mode@example.com") {
@@ -5184,13 +5055,22 @@ func TestWatchModePickerEndToEnd(t *testing.T) {
 			t.Fatalf("expected the process to still be alive after backing out of WATCH MODE to ROOT, got %v", err)
 		}
 		// Re-entering watch from the restored ROOT frame proves the stack was
-		// genuinely popped back to ROOT, not just a stale-looking render.
-		down(master) // run -> watch
+		// genuinely popped back to ROOT, not just a stale-looking render. The
+		// restored frame keeps its cursor on "watch", so Enter alone re-enters
+		// — a further Down would land on "status" and run it, which is what
+		// this subtest used to do unnoticed: its old check matched the first
+		// entry's title. So the proof is twofold: WATCH MODE's title painted a
+		// second time (the renderer may rewrite only the " - WATCH MODE"
+		// suffix, since the rail is one color now — decision 0067), and no
+		// status card, the sign that a command ran instead.
 		enter(master)
 		time.Sleep(300 * time.Millisecond)
 		out := stripANSI(capture())
-		if !strings.Contains(out, "claude cpro - WATCH MODE") {
+		if strings.Count(out, "WATCH MODE") < 2 {
 			t.Fatalf("expected to re-enter WATCH MODE from the restored ROOT, got %q", out)
+		}
+		if strings.Contains(out, "╭─ watch-mode@example.com") {
+			t.Fatalf("expected no command to run while re-entering WATCH MODE, got %q", out)
 		}
 		esc(master)
 		esc(master)

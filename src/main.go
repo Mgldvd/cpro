@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.3"
+const version = "0.1.4"
 
 func main() {
 	if s, err := openStore(); err == nil {

@@ -83,7 +83,6 @@ func TestGenerateHeaderDemoFrames(t *testing.T) {
 
 	m := &rootPickerApp{
 		root: root, s: s, color: true, width: width, height: height,
-		shades:       deriveAccentShades(accentMode, len(rootGroups)),
 		accountUsage: usage,
 	}
 	m.stack = newNavStack(rootFrame{kind: frameList, list: newCommandBrowseList(rootPickerFilteredEntries(root, rootLauncherNames))})

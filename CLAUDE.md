@@ -450,12 +450,9 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   left-rule frame — drawn in `currentTheme`'s own runes, theme.go, never hardcoded
   here — and the `key action ∙ key action` footer line every screen uses —
   `renderPanel` colors the whole frame one color; rootui.go's own `renderRootPanel`
-  is a separate, per-line-colored sibling for the one screen that needs a multi-color
-  rail, rather than reworking this signature for every existing single-color caller),
-  `deriveAccentShades`/`colorToHex` (an n-shade gradient in the same hue family as a
-  given accent color, via lipgloss's own `Lighten`/`Darken` rather than hand-rolled
-  RGB/HSL — the root picker's five-shade semantic-group rail is its only caller so
-  far, but it's written generically), `visibleWidth`/`truncateToWidth`
+  is the root picker's sibling, also one solid color since decision 0067, differing
+  only in layout — optional title, rows carrying their own indent),
+  `visibleWidth`/`truncateToWidth`
   (ANSI-aware width measurement and plain-text truncation), `screenTitle` (every
   cpro TUI screen's own `"claude cpro[ - NAME]"` border title — the border is
   the location indicator, so nothing ever prints a second title line above the
@@ -857,7 +854,8 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   of the typed command is the only thing there. `rootPickerMeta` lists every
   picker-eligible command in its fixed display order with three pieces of
   picker-only presentation data: `group` (Core/Account/Settings/System/About —
-  internal only, never rendered as text, it only picks a rail shade, see below;
+  internal only, never rendered as text — it only places the blank rail row
+  between groups while browsing;
   `config`'s own group is "Core", reused rather than a sixth group — "Core" only
   ever renders in the Root frame, run/status/watch, or the Menu frame, config
   and permissions, never both at once, and listing `config` first with a Core
@@ -933,21 +931,14 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   decorated label, not the bare name, so a row with an arrow still lines up with
   the rest.
 
-  The five-shade rail comes from `deriveAccentShades` (tui.go): n perceptually
-  darkened variants of the current `accentMode`, computed once per picker launch via
-  lipgloss's own `Darken` (not hand-rolled RGB/HSL, and not a fixed per-group palette
-  — the whole gradient follows whatever Accent is configured, see `cpro config
-  accent`), from the most subdued (index 0, `rootGroups`' first entry, "Core") to
-  `accentMode` itself unchanged (the last index, "About"). `rootGroupShadeIndex` maps
-  a row's group to that shade; `renderRootPanel` (this file, not tui.go's
-  single-color `renderPanel` — a second, per-line-colored sibling built specifically
-  for this one screen's multi-color rail, rather than reworking `renderPanel`'s
-  signature for every existing caller) applies it per "│", with the panel's opening
-  "╭─" always shade 0 and closing "╰─" always the last shade. The cursor ("❯") is
-  always styled in the plain `accentMode`, never the row's own group shade — a
-  deliberate, spec'd distinction between "rail shade = grouping" and "Accent = active
-  focus." `dimStyle` (tui.go, SGR faint) gives a row's metadata secondary visual
-  weight without its own color.
+  The rail — every "│", both panel edges, the search line — is one solid
+  `accentMode` (`railColor`, drawn by `renderRootPanel`), so it follows whatever
+  Accent is configured (`cpro config accent`). Decision 0067 retired the
+  five-shade, per-group gradient it used to be (`deriveAccentShades`,
+  `rootGroupShadeIndex` and `rootGroups` are gone): grouping is shown by the blank
+  rail row between groups alone. The cursor ("❯") is `accentMode` too. `dimStyle`
+  (tui.go, SGR faint) gives a row's metadata secondary visual weight without its
+  own color.
 
   Typing any printable character while browsing switches straight into a flat,
   ranked search (`rootPickerScore`: exact name > name prefix > name substring > name
@@ -963,8 +954,8 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   before titles existed, the border now carries only `screenTitle(frame.title)`, so
   the two don't compete for the same line (matching the task's own Root/Menu
   mockups, which both show "Search:" as its own row under the title); search mode
-  also collapses the rail to one flat `accentMode` color instead of the five-group
-  gradient, since a filtered result set isn't several groups anymore. Like
+  drops the blank group separators, since a filtered result set isn't several
+  groups anymore. Like
   configApp, this screen uses single-Esc (no "press again" warning) — after Enter
   picks a command, `pickCommandArgs` still calls the existing `pickRequiredArgs`/
   `requiredArgTokens` (ui.go) unchanged for any command needing positional
@@ -1011,11 +1002,10 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   any other key cancels the arm while still doing its own normal thing
   (`updateNormal`) — the same "any other key clears it" rule `escGuardField`
   (ui.go) uses one level down. Two signals fire together while armed:
-  `railShade` replaces the whole five-shade gradient (rail rows and both panel
-  edges alike, plus the search line) with one solid `dangerColor` (ui.go — the
-  same user-configured Danger color `cpro config` uses, not a fixed hex) —
-  deliberately not tinting the existing gradient, which would read as a sixth
-  shade rather than a warning — and the footer's own key hint changes from
+  `railColor` turns the whole rail (rail rows and both panel edges alike, plus
+  the search line) from `accentMode` to `dangerColor` (ui.go — the same
+  user-configured Danger color `cpro config` uses, not a fixed hex), and the
+  footer's own key hint changes from
   `"Esc²", "to exit"` to a single pre-styled `"Esc¹ again"` segment, also in
   `dangerColor`. Both revert the instant the arm is cancelled. The arm also
   expires on its own if nothing happens: `arm` (rootui.go) starts a
@@ -1581,23 +1571,22 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   `/proc`-visible sessions (not seeded cache data) to prove the header's
   singular/plural wording and session rows' real path/pid/no-wrap behavior
   end to end through an actual pty.
-- `TestDeriveAccentShades`, `TestRootRowResponsive`, and `TestSubsequenceMatch`
-  (all pure, no pty) cover the root picker's gradient math, its per-row metadata
-  responsiveness, and its dependency-free fuzzy matcher directly.
-  `TestRootPickerGradient` and `TestRootPickerResponsive` (pty-driven, via
-  `resizePTY`) cover the rest live: which rail shade each command's row actually
-  renders in, that the cursor stays in the plain Accent color regardless of its
-  row's shade, that `cpro config accent` changing the preference is reflected in
-  the very next picker launch, that search mode collapses to one Accent color,
-  and metadata truncating/disappearing (never the command list wrapping) as the
-  terminal narrows. The "cursor on a different group's row" case is rendered
+- `TestRootRowResponsive` and `TestSubsequenceMatch` (both pure, no pty) cover
+  the root picker's per-row metadata responsiveness and its dependency-free fuzzy
+  matcher directly. `TestRootPickerRailColor` and `TestRootPickerResponsive`
+  (pty-driven, via `resizePTY`) cover the rest live: that every rail rune renders
+  in exactly one color, the Accent (decision 0067 — it was a five-shade gradient),
+  that the cursor shares it, that `cpro config accent` changing the preference is
+  reflected in the very next picker launch, that search keeps the same single
+  color, and metadata truncating/disappearing (never the command list wrapping) as
+  the terminal narrows. The "cursor on a row further down" case is rendered
   directly (`m.viewNormal()` with `cursor` set to the target index) rather than
   driven live through a pty, for the same reason `TestRootPicker` gives for its
   own presence-only assertions: bubbletea's diffing renderer may only rewrite a
   couple of cells on a same-screen cursor move, not the whole destination row, so
   a cumulative pty capture can't reliably prove what color a non-default row's
   cursor ends up in — a fresh, single render sidesteps that class of flakiness
-  entirely. `TestRootPickerGradient`'s color assertions match against the
+  entirely. `TestRootPickerRailColor`'s row lookups match against the
   ANSI-stripped line to locate the right row (a raw line carries a color-reset
   escape between "❯" and the command name, which breaks a plain substring search
   for "❯ run") but return the original, still-styled line, and only consider
@@ -1724,11 +1713,11 @@ Nineteen files (all under `src/`), one package (`main`), each with a distinct re
   colored-"●"-prefix rendering, the static-shortLabel fallback with no live
   `permMode`, and that truncation at a narrow width doesn't corrupt the color
   escape) — both direct calls, no pty, for the same reason
-  `TestRootPickerGradient`'s own subtests avoid a live pty for a per-row
+  `TestRootPickerRailColor`'s own subtests avoid a live pty for a per-row
   color check: a same-cell, style-only diff (a row's rail color changing
   while its glyph doesn't) is exactly the kind of partial rewrite bubbletea's
   renderer may leave to a bare cursor-positioning write with no fresh color
-  escape at all — confirmed live when the search-mode gradient subtest above
+  escape at all — confirmed live when the search-mode rail-color subtest above
   was first extended to account for the new entry, and fixed by switching
   that subtest to a direct `viewSearch()` call instead of a live pty capture.
 - Decision 0022 added `TestInteractiveRunFlow` subtests for → as a

@@ -13,9 +13,10 @@ import (
 )
 
 // rootPickerEntry is one selectable row in the bare-`cpro` command picker.
-// group is presentation-only metadata (see rootGroups/rootGroupShadeIndex)
-// that picks which of the five accent-derived rail shades this row's "│"
-// uses — it is never rendered as text and has no effect on behavior.
+// group is presentation-only metadata: a blank rail row separates two
+// consecutive groups while browsing (viewNormal). It is never rendered as text,
+// no longer colors anything (the rail is one solid Accent color — decision
+// 0067), and has no effect on behavior.
 // shortLabel is the short, always-visible right-side metadata for this row
 // (2-4 words); description is the longer, below-panel text shown only for
 // the currently highlighted row, populated from the command's own cobra
@@ -38,27 +39,6 @@ type rootPickerEntry struct {
 	defaultAcct string
 }
 
-// rootGroups is the fixed order of the picker's five internal semantic
-// groups, from the rail's most subdued shade (Core) to its brightest — the
-// main accent color itself (About). Groups are never rendered as text
-// anywhere in the picker; they only select a rail shade (see
-// rootGroupShadeIndex/deriveAccentShades, tui.go).
-var rootGroups = []string{"Core", "Account", "Settings", "System", "About"}
-
-// rootGroupShadeIndex returns group's position in rootGroups (and so which
-// of deriveAccentShades(accentMode, len(rootGroups))'s shades it uses),
-// falling back to the last/brightest shade for a group that isn't listed —
-// which should never happen given rootPickerMeta below, but a graceful
-// fallback here is cheaper than a panic over a picker color.
-func rootGroupShadeIndex(group string) int {
-	for i, g := range rootGroups {
-		if g == group {
-			return i
-		}
-	}
-	return len(rootGroups) - 1
-}
-
 // rootPickerMeta is the full command palette's static, picker-only
 // presentation data — group and shortLabel — in the exact order commands are
 // shown. A command not listed here (e.g. one added later without updating
@@ -72,8 +52,8 @@ func rootGroupShadeIndex(group string) int {
 // them and `cpro menu` would otherwise just repeat it.
 // config's own group is "Core" — reused, not a sixth group: "Core" only ever
 // renders in the Root frame (run/status/watch) or the Menu frame
-// (config/default), never both at once, so there's no shading conflict, and
-// it's what puts config and default together in one leading shade/section at
+// (config/default), never both at once, so there's no conflict, and it's
+// what puts config and default together in one leading section at
 // the top of the Menu frame, ahead of Account. "default" sits directly below
 // "config", same group, so there's no blank rail separator between them.
 // "default" merges what used to be two separate entries, "permissions" and
@@ -299,7 +279,7 @@ type rootFrame struct {
 // entirely once search narrows the list to one flat result set) sharing
 // configApp's visual language (styleText/renderFooter, tui.go) — the
 // always-visible below-panel description for just the highlighted row, the
-// five-shade semantic-group rail, and search-as-you-type with no explicit
+// blank-row group separators, and search-as-you-type with no explicit
 // "/" shortcut don't fit a huh Select cleanly. Two states in one screen
 // (normal browsing and search) rather than two tea.Programs, so there's no
 // flicker switching between them: typing a printable character while
@@ -324,8 +304,8 @@ type rootFrame struct {
 // prompts one level down (escGuardField, ui.go) — signaled two ways at
 // once: the footer's own key hint changes from "Esc² to exit" to
 // "Esc¹ again" in the configured danger color (dangerColor, ui.go), and
-// railShade turns the whole five-shade rail/both panel edges that same
-// solid color, replacing the gradient rather than tinting it; any key other
+// railColor turns the whole rail and both panel edges from the Accent color
+// to that same danger color; any key other
 // than a second Esc cancels the arm (and still does its own normal thing).
 // The arm also expires on its own after exitArmTimeout via a
 // generation-tagged tea.Tick (arm/exitArmExpiredMsg), so walking away
@@ -339,8 +319,7 @@ type rootPickerApp struct {
 
 	color  bool
 	width  int
-	height int      // terminal rows (tea.WindowSizeMsg); 0 until the first one arrives — see visibleRows
-	shades []string // deriveAccentShades(accentMode, len(rootGroups)); shades[0] darkest, shades[len-1] == accentMode
+	height int // terminal rows (tea.WindowSizeMsg); 0 until the first one arrives — see visibleRows
 
 	exitArmed    bool // true after a first Esc at the stack's own root frame; a second consecutive Esc exits — see updateNormal
 	exitArmedGen int  // bumped every time exitArmed is newly set (never on cancel) — see exitArmExpiredMsg
@@ -706,7 +685,7 @@ func (m *rootPickerApp) updateEmailInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // viewEmailInput renders the email field in the same single-color panel every
 // other small screen here uses (renderPanel, tui.go — not the main list's
-// five-shade rail), with the typed value followed by the same "_" cursor
+// renderRootPanel), with the typed value followed by the same "_" cursor
 // searchLine already draws, so typing here reads identically to typing in any
 // search field. A validation message renders in dangerColor below the field.
 func (m *rootPickerApp) viewEmailInput() string {
@@ -795,10 +774,9 @@ func pickCommandArgs(root *cobra.Command, names []string, title string) ([]strin
 	var resume *navStack[rootFrame]
 	for {
 		m := &rootPickerApp{
-			root:   root,
-			s:      s,
-			color:  tuiColorEnabled(root.ErrOrStderr()),
-			shades: deriveAccentShades(accentMode, len(rootGroups)),
+			root:  root,
+			s:     s,
+			color: tuiColorEnabled(root.ErrOrStderr()),
 		}
 		if resume != nil {
 			m.stack = *resume
@@ -1058,7 +1036,7 @@ func (m *rootPickerApp) updateSubmenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // viewSubmenu renders the "System credentials" submenu: a small, single-color
 // panel (renderPanel, tui.go — same as configApp's own sub-screens) rather
-// than the main list's five-shade rail, since there's no grouping to show for
+// than the main list's renderRootPanel, since there's no grouping to show for
 // two items. No search here either — two items doesn't need it.
 func (m *rootPickerApp) viewSubmenu() string {
 	frame := m.stack.current()
@@ -1627,34 +1605,26 @@ func (m *rootPickerApp) rootRow(e rootPickerEntry, selected bool, nameWidth int)
 }
 
 // renderRootPanel draws the picker's own frame in the configured Theme's own
-// runes (currentTheme, theme.go — never hardcoded here): like tui.go's
-// renderPanel, but with a per-line rail color (lineHex) instead of one color
-// for the whole frame — what the five-shade semantic-group rail needs in
-// normal mode, and what search mode uses too (every lineHex the same accent
-// color there, since search results are one filtered set, not five groups).
-// header, when non-empty, follows the top border (this screen's own
-// "claude cpro[ - NAME]" title — see screenTitle, tui.go); the search
-// field itself is a body line (see searchLine), not part of the border, so
-// switching into search never changes where the title sits. Unlike tui.go's
-// renderPanel, a body line is appended directly after the rail with no
-// injected separating space — rootRow already builds each line's own
-// complete leading indent (marker included), so an extra space here would
-// push the cursor a column further right than the design calls for; a
-// genuinely empty line (a blank group-separator row) is left as a bare rail
-// with nothing after it.
-func renderRootPanel(color bool, edgeTop, edgeBottom, header string, lineHex, lines []string) string {
+// runes (currentTheme, theme.go — never hardcoded here) and one solid color
+// (decision 0067; it drew a per-line five-shade gradient before). It differs
+// from tui.go's renderPanel only in layout: the title is optional (bare
+// `cpro`'s launcher has none — see screenTitle, tui.go) and each line carries
+// its own leading indent, since the picker's rows reserve their own cursor
+// column right after the rail.
+func renderRootPanel(color bool, hex, header string, lines []string) string {
 	top := currentTheme.Top()
 	if header != "" {
 		top += " " + header
 	}
+	rail := styleText(color, currentTheme.Rail(), hex)
 	var b strings.Builder
-	b.WriteString(styleText(color, top, edgeTop))
-	for i, line := range lines {
+	b.WriteString(styleText(color, top, hex))
+	for _, line := range lines {
 		b.WriteByte('\n')
-		b.WriteString(styleText(color, currentTheme.Rail(), lineHex[i]) + line)
+		b.WriteString(rail + line)
 	}
 	b.WriteByte('\n')
-	b.WriteString(styleText(color, currentTheme.Bottom(), edgeBottom))
+	b.WriteString(styleText(color, currentTheme.Bottom(), hex))
 	return b.String()
 }
 
@@ -1680,19 +1650,15 @@ func (m *rootPickerApp) searchLine() string {
 	return "  Filter: " + query + styleText(m.color, "_", accentMode)
 }
 
-// railShade returns the rail color for group: the group's own gradient
-// shade normally, or dangerColor — solid, the same configured danger color
-// as every other double-Esc warning in cpro (escGuardField, ui.go) — for
-// every row and both edges alike while a first Esc has armed exit, replacing
-// the gradient rather than tinting it. Do not preserve the gradient during
-// this state: a partially-colored rail would read as a sixth shade, not a
-// warning. This is on top of, not instead of, the footer's own "Esc¹ again"
-// (also dangerColor, viewNormal) — both signal the same armed state together.
-func (m *rootPickerApp) railShade(group string) string {
+// railColor is the one color the whole rail — every "│", both panel edges,
+// the search line — is drawn in: the Accent color, solid (decision 0067,
+// which retired the five-shade per-group gradient), or the Danger color while
+// a first Esc has armed exit, so the armed state still reads at a glance.
+func (m *rootPickerApp) railColor() string {
 	if m.exitArmed {
 		return dangerColor
 	}
-	return m.shades[rootGroupShadeIndex(group)]
+	return accentMode
 }
 
 func (m *rootPickerApp) viewNormal() string {
@@ -1701,33 +1667,22 @@ func (m *rootPickerApp) viewNormal() string {
 	for _, e := range frame.list.items {
 		nameWidth = max(nameWidth, visibleWidth(e.name))
 	}
-	searchHex := m.shades[0]
-	if m.exitArmed {
-		searchHex = dangerColor
-	}
 	lines := []string{m.searchLine()}
-	lineHex := []string{searchHex}
 	cursorLine := 0
 	for i, e := range frame.list.items {
 		if i > 0 && e.group != frame.list.items[i-1].group {
-			// A blank rail row between groups — no heading text, no "├─",
-			// just the upcoming group's own shade — restores a subtle
-			// sense of grouping without spending a whole labeled row on it.
+			// A blank rail row between groups — no heading text, no "├─" —
+			// restores a subtle sense of grouping without spending a whole
+			// labeled row on it.
 			lines = append(lines, "")
-			lineHex = append(lineHex, m.railShade(e.group))
 		}
 		if i == frame.list.cursor {
 			cursorLine = len(lines)
 		}
 		lines = append(lines, m.rootRow(e, i == frame.list.cursor, nameWidth))
-		lineHex = append(lineHex, m.railShade(e.group))
 	}
-	lines, lineHex = scrollLines(m.height, rootChromeLines, lines, lineHex, cursorLine)
-	edgeTop, edgeBottom := m.shades[0], m.shades[len(m.shades)-1]
-	if m.exitArmed {
-		edgeTop, edgeBottom = dangerColor, dangerColor
-	}
-	panel := renderRootPanel(m.color, edgeTop, edgeBottom, screenTitle(frame.title), lineHex, lines)
+	lines = scrollLines(m.height, rootChromeLines, lines, cursorLine)
+	panel := renderRootPanel(m.color, m.railColor(), screenTitle(frame.title), lines)
 	desc := ""
 	if len(frame.list.items) > 0 {
 		desc = m.describe(frame.list.items[frame.list.cursor].description)
@@ -1753,7 +1708,7 @@ func (m *rootPickerApp) viewNormal() string {
 		// renderFooter's own empty-key escape hatch (the same one "Type to
 		// search" above already uses) rather than widening renderFooter's
 		// signature for every other caller. This is in addition to, not
-		// instead of, railShade's own rail/edge recolor above — both signal
+		// instead of, railColor's own rail/edge recolor above — both signal
 		// the same armed state together.
 		hints = append(hints, [2]string{"", styleText(m.color, "Esc¹ again", dangerColor)})
 	default:
@@ -1768,7 +1723,7 @@ func (m *rootPickerApp) viewSearch() string {
 	title := screenTitle(frame.title)
 
 	if len(frame.list.filtered) == 0 {
-		panel := renderRootPanel(m.color, accentMode, accentMode, title, []string{accentMode, accentMode}, []string{m.searchLine(), "  No commands found"})
+		panel := renderRootPanel(m.color, accentMode, title, []string{m.searchLine(), "  No commands found"})
 		footer := renderFooter(m.color, accentMode, [2]string{"", "Backspace to edit"}, [2]string{"Esc", "Clear"})
 		return panel + "\n\n" + footer
 	}
@@ -1778,15 +1733,13 @@ func (m *rootPickerApp) viewSearch() string {
 		nameWidth = max(nameWidth, visibleWidth(frame.list.items[idx].name))
 	}
 	lines := make([]string, 0, len(frame.list.filtered)+1)
-	lineHex := make([]string, 0, len(frame.list.filtered)+1)
 	lines = append(lines, m.searchLine())
-	lineHex = append(lineHex, accentMode)
 	for i, idx := range frame.list.filtered {
+		// One flat result set: no blank group separators while searching.
 		lines = append(lines, m.rootRow(frame.list.items[idx], i == frame.list.fcursor, nameWidth))
-		lineHex = append(lineHex, accentMode) // search results are one filtered set, not five groups; no blank separators either
 	}
-	lines, lineHex = scrollLines(m.height, rootChromeLines, lines, lineHex, frame.list.fcursor+1)
-	panel := renderRootPanel(m.color, accentMode, accentMode, title, lineHex, lines)
+	lines = scrollLines(m.height, rootChromeLines, lines, frame.list.fcursor+1)
+	panel := renderRootPanel(m.color, accentMode, title, lines)
 	desc := m.describe(frame.list.items[frame.list.filtered[frame.list.fcursor]].description)
 	if line := m.flowErrorLine(); line != "" {
 		desc = line
@@ -1909,8 +1862,8 @@ func accountPickerRow(color bool, width int, email string, u runAccountUsage, se
 }
 
 // viewRunAccount renders STEP 2 while browsing: a small, single-color panel
-// (renderPanel, tui.go — same as viewSubmenu, not the main list's five-shade
-// rail, since a plain account list has no grouping to show). Each row carries
+// (renderPanel, tui.go — same as viewSubmenu, not the main list's
+// renderRootPanel, since a plain account list has no grouping to show). Each row carries
 // its own live Session usage (decision 0031) through the shared
 // accountListLines (browseui.go) — the same rows, the same cache, and the
 // same scroll window every other account picker uses.

@@ -982,7 +982,7 @@ func (m *sessionApp) viewPickerBrowse() string {
 	}
 	// Keep the highlighted row on screen on a short terminal — the same
 	// shared scroll window every other list in cpro uses (browseui.go).
-	lines, _ = scrollLines(m.height, listChromeLines, lines, nil, st.cursor)
+	lines = scrollLines(m.height, listChromeLines, lines, st.cursor)
 	body := renderPanel(m.color, m.frameColor(), screenTitle(m.pickerTitle()), lines)
 	if note := m.hiddenActiveNote(); note != "" {
 		body += "\n\n" + note
@@ -1077,7 +1077,7 @@ func (m *sessionApp) viewPickerSearch() string {
 	for i, idx := range st.filtered {
 		lines[i] = m.pickerRowLine(i, st.items[idx], st.fcursor, nameWidth, multiAccount)
 	}
-	lines, _ = scrollLines(m.height, listChromeLines, lines, nil, st.fcursor)
+	lines = scrollLines(m.height, listChromeLines, lines, st.fcursor)
 	body := renderPanel(m.color, accentMode, header, lines)
 	hints := [][2]string{{"↑↓", "Navigate"}}
 	switch m.pickerMode {

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"image/color"
 	"io"
 	"os"
 	"strings"
@@ -144,44 +142,6 @@ func dimStyle(color bool, text string) string {
 		return text
 	}
 	return lipgloss.NewStyle().Faint(true).Render(text)
-}
-
-// shadeDarkenMax bounds how much deriveAccentShades darkens its most subdued
-// shade (index 0) — kept moderate on purpose: cpro's accent palette
-// (colorPalette, ui.go) is already made of mid-to-bright pastel hues, so a
-// conservative darken keeps every shade legible on both dark and light
-// terminal backgrounds without either extreme risking disappearing. cpro has
-// no existing terminal-background detection to lean on instead (ui.go's
-// accent/styleText color model is a binary terminal-or-not switch, no
-// graduated capability detection), so this fixed, conservative range is the
-// deliberate fallback.
-const shadeDarkenMax = 0.35
-
-// deriveAccentShades returns n hex colors in the same hue family as accent,
-// from the most subdued (index 0) up to accent itself, unchanged, at index
-// n-1 — reusing lipgloss's own perceptual Lighten/Darken rather than
-// hand-rolled RGB/HSL math, so every shade rides through exactly the same
-// color system every other cpro accent color already does (accent()/
-// styleText(), both ui.go). n<=1 returns accent unchanged.
-func deriveAccentShades(accent string, n int) []string {
-	if n <= 1 {
-		return []string{accent}
-	}
-	base := lipgloss.Color(accent)
-	shades := make([]string, n)
-	for i := range shades {
-		amount := shadeDarkenMax * float64(n-1-i) / float64(n-1)
-		shades[i] = colorToHex(lipgloss.Darken(base, amount))
-	}
-	return shades
-}
-
-// colorToHex converts a color.Color (as returned by lipgloss.Darken/Lighten)
-// back to cpro's own "#RRGGBB" color representation (colorPalette,
-// accentMode, and every other color in ui.go).
-func colorToHex(c color.Color) string {
-	r, g, b, _ := c.RGBA()
-	return fmt.Sprintf("#%02X%02X%02X", uint8(r>>8), uint8(g>>8), uint8(b>>8))
 }
 
 // visibleWidth is lipgloss.Width under cpro's own name, used wherever a custom

@@ -335,18 +335,10 @@ func scrollRange(height, chrome, total, cursorLine int) (int, int) {
 	return start, start + available
 }
 
-// scrollLines slices lines (and its optional parallel per-line color slice,
-// for the root picker's multi-shade rail) down to scrollRange's window. A nil
-// lineHex is returned nil, so callers with single-color panels can ignore it.
-func scrollLines(height, chrome int, lines, lineHex []string, cursorLine int) ([]string, []string) {
+// scrollLines slices lines down to scrollRange's window.
+func scrollLines(height, chrome int, lines []string, cursorLine int) []string {
 	start, end := scrollRange(height, chrome, len(lines), cursorLine)
-	if start == 0 && end == len(lines) {
-		return lines, lineHex
-	}
-	if lineHex == nil {
-		return lines[start:end], nil
-	}
-	return lines[start:end], lineHex[start:end]
+	return lines[start:end]
 }
 
 // accountListLines renders a whole account list — identity plus the shared
