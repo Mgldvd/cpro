@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 func main() {
 	if s, err := openStore(); err == nil {
@@ -181,6 +181,9 @@ func rootCommand() *cobra.Command {
 		if _, err = s.resolve(email); err != nil {
 			return err
 		}
+		if err = requireNoLiveSession(s, email); err != nil {
+			return err
+		}
 		cmd, err := claudeCommand(s.profile(email), "auth", "logout")
 		if err != nil {
 			return err
@@ -195,6 +198,9 @@ func rootCommand() *cobra.Command {
 		}
 		defer lock.Close()
 		if _, err = s.resolve(email); err != nil {
+			return err
+		}
+		if err = requireNoLiveSession(s, email); err != nil {
 			return err
 		}
 		if !yes {

@@ -66,19 +66,19 @@ func TestGenerateScreenCaptures(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	seedSession := func(email, cwd, sessionID string) {
+	seedSession := func(email, cwd, sessionID, title string) {
 		t.Helper()
 		dirName := projectDirName(cwd)
 		projectDir := filepath.Join(s.profile(email), "projects", dirName)
 		if err := os.MkdirAll(projectDir, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(projectDir, sessionID+".jsonl"), []byte(`{"type":"user"}`+"\n"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(projectDir, sessionID+".jsonl"), []byte(`{"type":"ai-title","aiTitle":"`+title+`"}`+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	seedSession(emailA, "/home/you/projects/cpro", "26074c99-80ca-4211-9c87-4510d79a27da")
-	seedSession(emailB, "/home/you/work/api", "a93fe208-1111-4000-8000-000000000000")
+	seedSession(emailA, "/home/you/projects/cpro", "26074c99-80ca-4211-9c87-4510d79a27da", "Session picker titles")
+	seedSession(emailB, "/home/you/work/api", "a93fe208-1111-4000-8000-000000000000", "Rate limiter for the billing API")
 
 	c, err := s.read()
 	if err != nil {
@@ -229,12 +229,21 @@ func TestGenerateScreenCaptures(t *testing.T) {
 	}
 	write("cpro-root-menu-session-screen", newSession(screenSessionMenu).viewSessionMenu())
 
+	// Titles load asynchronously in the real program (loadSessionTitles);
+	// run that load synchronously so the capture shows the settled screen.
+	loadTitles := func(m *sessionApp) {
+		if cmd := m.takePickerLoad(); cmd != nil {
+			m.Update(cmd())
+		}
+	}
 	cont := newSession(screenContinuePicker)
 	cont.openPicker("continue")
+	loadTitles(cont)
 	write("cpro-root-menu-session-continue", cont.viewPickerBrowse())
 
 	dest := newSession(screenContinuePicker)
 	dest.openPicker("continue")
+	loadTitles(dest)
 	if entries := dest.picker.items; len(entries) > 0 {
 		dest.selectSession(&entries[0])
 	}

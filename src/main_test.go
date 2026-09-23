@@ -1167,7 +1167,9 @@ func TestCLI(t *testing.T) {
 	if !strings.Contains(out, `"email":"b@example.com","default":true,"authenticated":true,"sessions":[]`) {
 		t.Fatalf("headless live run reported as a session: %s", out)
 	}
-	run(1, "logout", "b@example.com")
+	if _, stderr := run(1, "logout", "b@example.com"); !strings.Contains(stderr, "running Claude session") {
+		t.Fatalf("expected logout refused by the live session, got %q", stderr)
+	}
 	run(1, "remove", "b@example.com", "--yes")
 	if err := child.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -1179,6 +1181,16 @@ func TestCLI(t *testing.T) {
 		t.Fatalf("signal not preserved: %v", ws)
 	}
 	t.Setenv("CPRO_TEST_WAIT", "")
+	// What a session leaves behind — Claude's background helpers, MCP servers,
+	// jobs it started — carries the same CLAUDE_CONFIG_DIR and session tag but
+	// is not the tagged process itself, so it must not block the account
+	// (decision 0064). Previously they inherited the account lock and did.
+	leftover := exec.Command("sleep", "30")
+	leftover.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+(&store{dir: filepath.Join(dir, "config", "cpro")}).profile("b@example.com"), cproSessionPIDEnv+"=1")
+	if err := leftover.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer leftover.Process.Kill()
 	run(1, "remove", "a@example.com")
 	run(0, "logout", "b@example.com")
 	out, _ = run(0, "list", "--json")
@@ -10383,6 +10395,10 @@ func TestDeletePickerHidesActiveSessions(t *testing.T) {
 	if len(m.picker.items) != 2 || m.hiddenActive != 0 {
 		t.Fatalf("expected continue to keep both sessions and hide none, got %d items, hidden %d", len(m.picker.items), m.hiddenActive)
 	}
+	// ...but marks the live one (decision 0064), and only that one.
+	if view := m.viewPickerBrowse(); strings.Count(view, "● running") != 1 {
+		t.Fatalf("expected exactly the live session tagged running in CONTINUE SESSION, got %q", view)
+	}
 }
 
 // TestSessionAppDirect covers sessionApp's (sessionui.go) own logic directly —
@@ -10483,7 +10499,7 @@ func TestSessionAppDirect(t *testing.T) {
 		}
 	})
 
-	t.Run("continue mode: Enter opens the destination account picker, excluding the session's own account", func(t *testing.T) {
+	t.Run("continue mode: Enter opens the destination account picker, offering every account including the owner", func(t *testing.T) {
 		m := newModel(true)
 		m.openPicker("continue")
 		m.stack.push(screenContinuePicker)
@@ -10492,13 +10508,12 @@ func TestSessionAppDirect(t *testing.T) {
 		if *m.stack.current() != screenContinueAccount {
 			t.Fatalf("expected Enter to push screenContinueAccount, got %v", *m.stack.current())
 		}
-		for _, e := range m.account.items {
-			if e == owner {
-				t.Fatalf("the session's own owning account %q must not be offered as its own destination", owner)
-			}
+		want := []string{"session-a@example.com", "session-b@example.com"}
+		if strings.Join(m.account.items, ",") != strings.Join(want, ",") {
+			t.Fatalf("expected every account offered, owner included, got %v", m.account.items)
 		}
-		if len(m.account.items) != 1 {
-			t.Fatalf("expected exactly the other account offered, got %v", m.account.items)
+		if note := m.continuingNote(); !strings.Contains(note, "from "+displayEmail(owner)) {
+			t.Fatalf("expected the screen to name the session's owner, got %q", note)
 		}
 	})
 
@@ -10522,7 +10537,7 @@ func TestSessionAppDirect(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("expected finalizing to quit the program")
 		}
-		want := []string{"session", "continue", chosen.email, m.account.items[0], "--", "--resume", chosen.sessionID}
+		want := []string{"__resume", chosen.sessionID, "--account", m.account.items[0]}
 		if len(m.picked) != len(want) {
 			t.Fatalf("picked = %v, want %v", m.picked, want)
 		}
@@ -10531,7 +10546,7 @@ func TestSessionAppDirect(t *testing.T) {
 				t.Fatalf("picked = %v, want %v", m.picked, want)
 			}
 		}
-		if m.picked[len(m.picked)-1] != chosen.sessionID || shortSessionID(chosen.sessionID) == chosen.sessionID {
+		if m.picked[1] != chosen.sessionID || shortSessionID(chosen.sessionID) == chosen.sessionID {
 			t.Fatalf("expected the full session ID in picked, not a shortened one: %v", m.picked)
 		}
 	})
@@ -10977,7 +10992,15 @@ func TestSessionUI(t *testing.T) {
 		}
 	})
 
-	t.Run("selecting a session then a destination account reuses continueSession end to end", func(t *testing.T) {
+	t.Run("selecting a session then a destination account resumes it there, even while that account is busy", func(t *testing.T) {
+		// A shared lock on the destination stands in for a running Claude
+		// session or its background helpers, which inherit s.run's shared
+		// lock and outlive the session: the copy must not need exclusivity.
+		busy, err := s.accountLock("ui-to@example.com", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer busy.Close()
 		master, slave := openPTY(t)
 		capture := drainPTY(master)
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -10998,13 +11021,18 @@ func TestSessionUI(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 		right(master) // select the only seeded session
 		time.Sleep(300 * time.Millisecond)
-		send(master, "\r") // the only offered destination account
+		down(master)       // past the owner (ui-from, listed first) to ui-to
+		send(master, "\r") // choose it
 		if err := cmd.Wait(); err != nil {
 			t.Fatalf("%v; output %q", err, stripANSI(capture()))
 		}
 		out := stdout.String()
-		if !strings.Contains(out, "Copied 1 session file(s) to ui-to@example.com") {
-			t.Fatalf("expected the real continueSession flow to run, got %q", out)
+		var invoked struct{ Directory string }
+		if err := json.Unmarshal([]byte(out), &invoked); err != nil {
+			t.Fatalf("parsing fake claude output: %q: %v", out, err)
+		}
+		if dir := invoked.Directory; dir != s.profile("ui-to@example.com") {
+			t.Fatalf("expected claude resumed under the chosen account, got dir=%q (%q)", dir, out)
 		}
 		if !strings.Contains(out, sessionID) {
 			t.Fatalf("expected the full session ID forwarded to claude via --resume, got %q", out)

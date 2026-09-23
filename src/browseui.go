@@ -69,7 +69,7 @@ func newAccountBrowseList(emails []string) browseList[string] {
 // metadata.
 func newSessionBrowseList(entries []sessionEntry) browseList[sessionEntry] {
 	b := newBrowseList(func(e sessionEntry) string {
-		return projectDisplayName(e.dirName) + " " + projectDisplayPath(e.dirName) + " " + e.sessionID + " " + displayEmail(e.email)
+		return projectDisplayName(e.dirName) + " " + projectDisplayPath(e.dirName) + " " + e.sessionID + " " + displayEmail(e.email) + " " + e.title
 	}, nil)
 	b.setItems(entries)
 	return b

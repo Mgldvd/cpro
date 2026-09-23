@@ -5,7 +5,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -151,7 +153,81 @@ type sessionApp struct {
 	// session list that quietly lost rows.
 	hiddenActive int
 
-	picked []string // the final ["session", ...] argv, once a choice is finalized
+	// active marks the rows a live Claude process is using right now
+	// (activeSessionKeys, re-derived from /proc on every visit), so continuing
+	// one reads as a deliberate choice: two Claude processes writing the same
+	// conversation fork it. alsoIn is CONTINUE SESSION's record of the other
+	// accounts holding a copy of a row's session — that picker shows one row
+	// per session ID (the newest copy, the one resumeSession continues from).
+	active map[string]bool
+	alsoIn map[string][]string
+
+	// pickerLoad is the title-loading command openPicker queues
+	// (loadSessionTitles); Init or the key handler that opened the picker hands
+	// it to bubbletea, so a slow read never delays the first frame.
+	pickerLoad tea.Cmd
+
+	// accountAuth is DESTINATION ACCOUNT's per-account auth result, filled
+	// asynchronously like accountUsage (fetchSessionAuth): true for a valid
+	// claude.ai session, false for signed out/invalid, absent while unknown.
+	accountAuth map[string]bool
+
+	picked []string // the final argv, once a choice is finalized
+}
+
+// sessionTitlesMsg delivers loadSessionTitles' results, keyed by
+// sessionEntryKey.
+type sessionTitlesMsg map[string]string
+
+// sessionAuthMsg delivers one DESTINATION ACCOUNT row's auth check.
+type sessionAuthMsg struct {
+	email string
+	ok    bool
+}
+
+// loadSessionTitles reads every listed session's title (sessionTitle,
+// session.go) off the UI goroutine and delivers them in one message.
+func loadSessionTitles(s *store, entries []sessionEntry) tea.Cmd {
+	if s == nil || len(entries) == 0 {
+		return nil
+	}
+	paths := make(map[string]string, len(entries))
+	for _, e := range entries {
+		paths[sessionEntryKey(e)] = filepath.Join(s.profile(e.email), "projects", e.dirName, e.sessionID+".jsonl")
+	}
+	return func() tea.Msg {
+		titles := make(sessionTitlesMsg, len(paths))
+		for key, path := range paths {
+			if t := sessionTitle(path); t != "" {
+				titles[key] = t
+			}
+		}
+		return titles
+	}
+}
+
+// fetchSessionAuth checks each account's session the way every other command
+// does (authStatus + validAuth), one command per account so a slow check never
+// holds up another row.
+func fetchSessionAuth(s *store, emails []string) tea.Cmd {
+	if s == nil || len(emails) == 0 {
+		return nil
+	}
+	cmds := make([]tea.Cmd, len(emails))
+	for i, email := range emails {
+		cmds[i] = func() tea.Msg {
+			auth, err := authStatus(s.profile(email))
+			return sessionAuthMsg{email: email, ok: err == nil && validAuth(email, auth)}
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
+// takePickerLoad hands over (once) the command openPicker queued.
+func (m *sessionApp) takePickerLoad() tea.Cmd {
+	cmd := m.pickerLoad
+	m.pickerLoad = nil
+	return cmd
 }
 
 // runSessionUI runs the SESSIONS screen to completion — cpro session's own
@@ -201,7 +277,7 @@ func runSessionAppProgram(cmd *cobra.Command, m *sessionApp) (picked []string, b
 	return m.picked, m.backOut, m.err
 }
 
-func (m *sessionApp) Init() tea.Cmd { return nil }
+func (m *sessionApp) Init() tea.Cmd { return m.takePickerLoad() }
 
 func (m *sessionApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -213,6 +289,22 @@ func (m *sessionApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.accountUsage = map[string]runAccountUsage{}
 		}
 		m.accountUsage[msg.email] = msg.usage
+		return m, nil
+	case sessionAuthMsg:
+		if m.accountAuth == nil {
+			m.accountAuth = map[string]bool{}
+		}
+		m.accountAuth[msg.email] = msg.ok
+		return m, nil
+	case sessionTitlesMsg:
+		for i := range m.picker.items {
+			if t, ok := msg[sessionEntryKey(m.picker.items[i])]; ok {
+				m.picker.items[i].title = t
+			}
+		}
+		if m.picker.searching() {
+			m.picker.refilter() // the title is part of what a query matches
+		}
 		return m, nil
 	case exitArmExpiredMsg:
 		if msg.gen == m.exitArmedGen {
@@ -342,10 +434,10 @@ func (m *sessionApp) updateSessionMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.exitRootScreen()
 		}
 	case "enter":
-		m.activateSessionMenuItem(sessionMenuItems[m.cursor].key)
+		return m, m.activateSessionMenuItem(sessionMenuItems[m.cursor].key)
 	case "right":
 		if key := sessionMenuItems[m.cursor].key; isForwardSessionItem(key) {
-			m.activateSessionMenuItem(key)
+			return m, m.activateSessionMenuItem(key)
 		}
 	}
 	return m, nil
@@ -355,7 +447,7 @@ func (m *sessionApp) updateSessionMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // read-only view of the same data), or "delete →" (the same browse, picking a
 // session to delete) — see sessionApp's own doc comment for why these are the
 // only rows, not every session subcommand.
-func (m *sessionApp) activateSessionMenuItem(key string) {
+func (m *sessionApp) activateSessionMenuItem(key string) tea.Cmd {
 	switch key {
 	case "continue":
 		m.openPicker("continue")
@@ -367,6 +459,7 @@ func (m *sessionApp) activateSessionMenuItem(key string) {
 		m.openPicker("delete")
 		m.stack.push(screenSessionList)
 	}
+	return m.takePickerLoad()
 }
 
 // openPicker (re)loads every recorded session across every registered
@@ -386,13 +479,34 @@ func (m *sessionApp) openPicker(mode string) {
 	m.pickerMode = mode
 	entries := listSessions(m.s, m.c)
 	m.hiddenActive = 0
+	m.active, m.alsoIn = nil, nil
 	if mode == "delete" {
 		var active []sessionEntry
 		entries, active = deletableSessions(m.s, m.c, entries)
 		m.hiddenActive = len(active)
 		m.deleteSel = map[string]bool{}
+	} else {
+		m.active = activeSessionKeys(m.s, m.c)
+		if mode == "continue" {
+			entries, m.alsoIn = dedupeSessions(entries)
+		}
 	}
 	m.picker = sessionListState{browseList: newSessionBrowseList(entries)}
+	m.pickerLoad = loadSessionTitles(m.s, entries)
+}
+
+// isActive reports whether a live Claude process is using e — or, in
+// CONTINUE SESSION's deduplicated list, any other copy of the same session.
+func (m *sessionApp) isActive(e sessionEntry) bool {
+	if m.active[sessionEntryKey(e)] {
+		return true
+	}
+	for _, email := range m.alsoIn[sessionEntryKey(e)] {
+		if m.active[sessionEntryKey(sessionEntry{email: email, dirName: e.dirName, sessionID: e.sessionID})] {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *sessionApp) updatePickerBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -571,19 +685,17 @@ func (m *sessionApp) checkedDeleteEntries(searching bool) []sessionEntry {
 }
 
 // selectSession records e as the session about to be continued and pushes
-// the destination-account picker — reusing the exact same account list every
-// other account picker in cpro builds from, minus e's own owning account
-// (continueSession itself rejects FROM_EMAIL == TO_EMAIL). Returns the
-// destination screen's Session-usage fetch (the shared
+// the destination-account picker — every registered account, e's own owner
+// included: which account continues a conversation is the user's call, made
+// from the live Session usage each row shows, never something cpro guesses
+// (picking the owner just resumes it in place, e.g. once its limit reset).
+// Returns the destination screen's Session-usage fetch (the shared
 // fetchAccountPickerUsage batch), or nil when every offered account is
 // already cached.
 func (m *sessionApp) selectSession(e *sessionEntry) tea.Cmd {
 	m.continuing = e
 	emails := make([]string, 0, len(m.c.Accounts))
 	for email := range m.c.Accounts {
-		if email == e.email {
-			continue
-		}
 		emails = append(emails, email)
 	}
 	sort.Strings(emails)
@@ -596,27 +708,33 @@ func (m *sessionApp) selectSession(e *sessionEntry) tea.Cmd {
 	if m.accountUsage == nil {
 		m.accountUsage = map[string]runAccountUsage{}
 	}
-	pending := make([]string, 0, len(emails))
+	var pendingUsage, pendingAuth []string
 	for _, email := range emails {
 		if _, ok := m.accountUsage[email]; !ok {
-			pending = append(pending, email)
+			pendingUsage = append(pendingUsage, email)
+		}
+		if _, ok := m.accountAuth[email]; !ok {
+			pendingAuth = append(pendingAuth, email)
 		}
 	}
-	if len(pending) == 0 {
-		return nil
+	var usageCmd tea.Cmd
+	if len(pendingUsage) > 0 {
+		usageCmd = fetchAccountPickerUsage(m.s, pendingUsage)
 	}
-	return fetchAccountPickerUsage(m.s, pending)
+	return tea.Batch(usageCmd, fetchSessionAuth(m.s, pendingAuth))
 }
 
-// finalizeContinue builds the exact argv cpro session continue's own,
-// unchanged, non-interactive RunE already parses — FROM_EMAIL, TO_EMAIL, and
-// an explicit --resume SESSION_ID so Claude jumps straight to the chosen
-// conversation instead of showing its own resume list. This is the one and
-// only place that argv is built; sessionApp never calls continueSession or
-// s.run itself, so there is exactly one implementation of the actual
-// migration behavior (decision 0025's own explicit requirement).
+// finalizeContinue builds the argv `cpro --resume SESSION_ID --account TO`
+// dispatches to (main.go's hidden __resume command → resumeSession): copy
+// just this one transcript into TO when it isn't already there, chdir to the
+// session's own recorded working directory, and resume it by ID. That path,
+// not `session continue`'s whole-directory copy from the current directory,
+// is what a session picked from any directory needs — and the explicit
+// --account is what keeps resumeSession from choosing an account itself.
+// sessionApp still never migrates or runs anything on its own; this is the
+// one place the argv is built (decision 0025).
 func (m *sessionApp) finalizeContinue(to string) {
-	m.picked = []string{"session", "continue", m.continuing.email, to, "--", "--resume", m.continuing.sessionID}
+	m.picked = []string{"__resume", m.continuing.sessionID, "--account", to}
 }
 
 // beginDelete opens the in-app confirmation for `session delete` (decisions
@@ -903,19 +1021,37 @@ func (m *sessionApp) pickerRowLine(i int, e sessionEntry, cursor int, nameWidth 
 		}
 	}
 	name := padEnd(projectDisplayName(e.dirName), nameWidth)
+	// A session a live Claude process is using carries a visible tag rather
+	// than being hidden or blocked: continuing it is allowed, but forks the
+	// conversation, so it should be a deliberate pick. (DELETE SESSION never
+	// lists such a session in the first place — decision 0053.)
+	tag := ""
+	if m.pickerMode != "delete" && m.isActive(e) {
+		tag = styleText(m.color, "● running", warningColor) + "  "
+	}
 	meta := sessionRowMeta(e, multiAccount)
+	if e.title != "" {
+		meta = truncateToWidth(e.title, 48) + " · " + meta
+	}
+	if others := m.alsoIn[sessionEntryKey(e)]; len(others) > 0 {
+		shown := make([]string, len(others))
+		for i, email := range others {
+			shown[i] = displayEmail(email)
+		}
+		meta += " · also in " + strings.Join(shown, ", ")
+	}
 	if m.width > 0 {
-		budget := m.width - visibleWidth(name) - visibleWidth(marker) - 6
+		budget := m.width - visibleWidth(name) - visibleWidth(marker) - visibleWidth(tag) - 6
 		if budget <= 0 {
 			meta = ""
 		} else {
 			meta = truncateToWidth(meta, budget)
 		}
 	}
-	if meta == "" {
+	if meta == "" && tag == "" {
 		return c + marker + name
 	}
-	return c + marker + name + "  " + dimStyle(m.color, meta)
+	return c + marker + name + "  " + tag + dimStyle(m.color, meta)
 }
 
 // viewPickerSearch is viewPickerBrowse's actively-searching counterpart,
@@ -959,14 +1095,60 @@ func (m *sessionApp) viewPickerSearch() string {
 // the shared accountListLines (browseui.go) — the same live Session-usage
 // row, alignment, and scroll window every other account picker in cpro uses.
 func (m *sessionApp) viewAccountBrowse() string {
-	lines := accountListLines(m.color, m.width, m.height, m.account.items, m.account.cursor, m.accountUsage)
+	lines := m.destinationLines(m.account.items, m.account.cursor)
 	if len(lines) == 0 {
 		lines = []string{"No accounts found"}
 	}
 	body := renderPanel(m.color, accentMode, screenTitle("DESTINATION ACCOUNT"), lines)
+	body += m.continuingNote()
 	footer := renderFooter(m.color, accentMode,
 		[2]string{"↑↓", "Navigate"}, [2]string{"→", "Select"}, [2]string{"↵", "Continue"}, [2]string{"", "Type to search"}, [2]string{"←", "Back"}, [2]string{"Esc", "Back"})
 	return body + "\n\n" + footer
+}
+
+// signedOutTag is what a DESTINATION ACCOUNT row whose own session is not
+// valid carries, so an account that would fail at launch is visible before
+// it is picked. It stays selectable — s.run reports the real error — since
+// the check can be wrong (a transient `claude auth status` failure).
+const signedOutTag = "○ signed out"
+
+// destinationLines is accountListLines (browseui.go) — the same shared
+// accountPickerRow and scroll window — plus signedOutTag on accounts
+// fetchSessionAuth found signed out. Room for the tag is reserved from the
+// width up front, so a narrow terminal degrades the row, never wraps it.
+func (m *sessionApp) destinationLines(emails []string, cursor int) []string {
+	width := m.width
+	if width > 0 {
+		width -= visibleWidth(signedOutTag) + 2
+	}
+	nameWidth := accountPickerNameWidth(emails)
+	lines := make([]string, len(emails))
+	for i, email := range emails {
+		lines[i] = accountPickerRow(m.color, width, email, m.accountUsage[email], i == cursor, nameWidth)
+		if ok, known := m.accountAuth[email]; known && !ok {
+			lines[i] += "  " + styleText(m.color, signedOutTag, warningColor)
+		}
+	}
+	start, end := scrollRange(m.height, listChromeLines, len(lines), cursor)
+	return lines[start:end]
+}
+
+// continuingNote names the session being continued and the account it was
+// recorded under, below DESTINATION ACCOUNT's panel, so choosing the owner
+// (resume in place) or another account (move it there) is an informed pick.
+func (m *sessionApp) continuingNote() string {
+	if m.continuing == nil {
+		return ""
+	}
+	e := m.continuing
+	note := projectDisplayName(e.dirName) + " · " + shortSessionID(e.sessionID) + " · from " + displayEmail(e.email)
+	if e.title != "" {
+		note = e.title + " · " + note
+	}
+	if m.isActive(*e) {
+		note += "\n" + styleText(m.color, "● running in another Claude process — continuing it forks the conversation", warningColor)
+	}
+	return "\n\n" + note
 }
 
 // viewAccountSearch is viewAccountBrowse's actively-searching counterpart.
@@ -982,8 +1164,8 @@ func (m *sessionApp) viewAccountSearch() string {
 	for i, idx := range st.filtered {
 		emails[i] = st.items[idx]
 	}
-	lines := accountListLines(m.color, m.width, m.height, emails, st.fcursor, m.accountUsage)
-	body := renderPanel(m.color, accentMode, header, lines)
+	lines := m.destinationLines(emails, st.fcursor)
+	body := renderPanel(m.color, accentMode, header, lines) + m.continuingNote()
 	footer := renderFooter(m.color, accentMode, [2]string{"↑↓", "Navigate"}, [2]string{"→", "Select"}, [2]string{"↵", "Continue"}, [2]string{"Esc", "Clear"})
 	return body + "\n\n" + footer
 }

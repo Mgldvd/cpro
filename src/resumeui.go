@@ -25,9 +25,9 @@ var resumePickerConfig = accountPickerConfig{title: "RESUME ACCOUNT", actionVerb
 
 // pickResumeAccount opens RESUME ACCOUNT, offering every registered account
 // except excluded (the session's own unusable owner) — deliberately excluded
-// from the list since it's already been ruled out, matching sessionui.go's
-// own destination-account picker excluding a session's owning account
-// (decision 0025). Returns the chosen email, or a clear error naming excluded
+// from the list since it's already been ruled out. (sessionui.go's own
+// DESTINATION ACCOUNT, by contrast, offers every account, owner included —
+// decision 0063 — since nothing has ruled the owner out there.) Returns the chosen email, or a clear error naming excluded
 // and suggesting --account when no terminal is available to show the picker
 // at all, or when excluded is the only registered account.
 func pickResumeAccount(cmd *cobra.Command, s *store, c config, excluded string) (string, error) {

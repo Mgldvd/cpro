@@ -125,6 +125,9 @@ func (s *store) login(email string) error {
 		return err
 	}
 	defer lock.Close()
+	if err := requireNoLiveSession(s, email); err != nil {
+		return err
+	}
 	if _, err := s.read(); err != nil {
 		return err
 	}
@@ -443,12 +446,53 @@ func (s *store) run(email string, args []string) error {
 		return err
 	}
 	// Replace cpro so terminal control, signals and exit status belong to Claude.
-	// Inherit the shared lock to prevent login/logout/remove during this session.
-	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, lock.Fd(), syscall.F_SETFD, 0)
-	if errno != 0 {
-		return errno
-	}
+	// The shared lock is deliberately NOT inherited (Go opens it O_CLOEXEC, so
+	// exec releases it): Claude's own background helpers and every process it
+	// spawns would inherit it too and outlive the session, blocking
+	// login/logout/remove and session copies long after it ended (decision
+	// 0064). Instead the session is tagged with its own pid — exec keeps the
+	// pid — and requireNoLiveSession finds exactly this process by it.
+	cmd.Env = append(cmd.Env, cproSessionPIDEnv+"="+strconv.Itoa(os.Getpid()))
 	return syscall.Exec(cmd.Path, cmd.Args, cmd.Env)
+}
+
+// cproSessionPIDEnv tags the claude process s.run execs with its own pid.
+// Every child it spawns (background helpers, MCP servers, shells, jobs left
+// running) inherits the variable but has a different pid, so "environ holds
+// CPRO_SESSION_PID=<this pid>" is true of exactly the cpro-launched session
+// itself — interactive or headless — and of nothing it left behind.
+const cproSessionPIDEnv = "CPRO_SESSION_PID"
+
+// liveSessionPIDs returns the pids of cpro-launched claude sessions still
+// running under profile (see cproSessionPIDEnv). Best-effort /proc scan, like
+// runningSessions: an unreadable or vanished pid is skipped.
+func liveSessionPIDs(profile string) []int {
+	var pids []int
+	for _, p := range liveProcessesForProfile(profile) {
+		environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", p.pid))
+		if err == nil && hasEnvVar(environ, []byte(cproSessionPIDEnv+"="+strconv.Itoa(p.pid))) {
+			pids = append(pids, p.pid)
+		}
+	}
+	sort.Ints(pids)
+	return pids
+}
+
+// requireNoLiveSession is what used to be implied by claude inheriting the
+// account's shared lock: login/logout/remove/system import must not rewrite a
+// profile a Claude session is using. Checked while the caller holds the
+// exclusive lock, so no new session can start in between.
+func requireNoLiveSession(s *store, email string) error {
+	pids := liveSessionPIDs(s.profile(email))
+	if len(pids) == 0 {
+		return nil
+	}
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
+	}
+	return fmt.Errorf("%s has %d running Claude session(s) (pid %s); close them first",
+		displayEmail(email), len(pids), strings.Join(list, ", "))
 }
 
 // markTrusted marks the current directory as trusted in the account's .claude.json,

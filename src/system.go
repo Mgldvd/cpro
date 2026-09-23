@@ -180,6 +180,9 @@ func importSystemAccount(s *store) (email string, created bool, err error) {
 		return "", false, err
 	}
 	defer lock.Close()
+	if err := requireNoLiveSession(s, email); err != nil {
+		return "", false, err
+	}
 
 	created, err = s.installCredentialsFile(email, credentials)
 	if err != nil {

@@ -203,8 +203,15 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
   loads — never read, rendered, or applied anywhere; do not add a new reader
   for this field. Provides `privateDir`/`atomicWrite` (mode
   0700/0600, atomic rename-based writes) and `fileLock`/`accountLock` (flock-based,
-  shared for `run`, exclusive for `login`/`logout`/`remove` — this is what makes
-  concurrent `cpro` invocations safe). `list`/`ls`, `status`, and `doctor` read
+  shared for `run` until it execs claude, exclusive for `login`/`logout`/`remove`/
+  `system import` — this is what makes concurrent `cpro` invocations safe). The
+  lock is **not** inherited by claude (decision 0064): claude's background
+  helpers, MCP servers and leftover jobs would inherit it too and hold the
+  account long after the session ended. Instead `s.run` tags the exec'd process
+  with `CPRO_SESSION_PID=<its own pid>` (exec keeps the pid, so only that exact
+  process matches — children inherit the variable with a different pid), and
+  the exclusive-lock commands call `requireNoLiveSession` (claude.go), which
+  refuses while such a process is alive, headless runs included. `list`/`ls`, `status`, and `doctor` read
   profiles without taking a lock, since they're purely informational.
 - **usage.go** — fetches session/week usage from the undocumented Anthropic OAuth
   usage endpoint using the account's stored access token, with a 60s on-disk cache
@@ -1209,9 +1216,8 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
   ID, so Claude's own resume list (previews included) is what picks the exact
   conversation rather than cpro guessing one from file-modification times
   (the wrong guess, twice, in the live session that prompted this feature).
-  Only `TO_EMAIL` is locked (exclusive, `s.accountLock`) for the copy, the
-  same way `importSystemAccount` (system.go) locks only the account being
-  written to; `FROM_EMAIL` is only ever read here, unlocked, the same way
+  Only `TO_EMAIL` is locked (shared, `sessionCopyLock` — decision 0063) for
+  the copy; `FROM_EMAIL` is only ever read here, unlocked, the same way
   `exportAccount`'s own read of a source account takes no lock either. Both
   accounts must already be registered, and `FROM_EMAIL` must have at least
   one recorded session for the current directory, or the command errors
@@ -1297,8 +1303,8 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
   `tea.Model` shape as `exportPickerApp` (system.go)/rootui.go's own RUN ACCOUNT
   frame, reused as its own small standalone `tea.Program` rather than a fourth
   reimplementation of the same browse/search state machine. Deliberately excludes
-  the already-ruled-out owner account from the list, matching sessionui.go's own
-  destination-account picker excluding a session's owning account (decision 0025).
+  the already-ruled-out owner account from the list (unlike sessionui.go's own
+  DESTINATION ACCOUNT, which offers every account, owner included — decision 0063).
 - **sessionui.go** (decision 0025) — `cpro session`'s interactive screen:
   `sessionApp`, the same shape `configApp` established — a small custom
   `tea.Model`, `m.stack` (`navStack[sessionScreen]`), `hasParent`/`backOut`
@@ -1322,12 +1328,27 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
   read-only (nothing), "continue" pushes `screenContinueAccount` (the
   destination-account picker), and "delete" pushes the retype guard below. `refilterPicker` matches project name, decoded path, the full
   session ID, and the owning account through `displayEmail` (decision 0024)
-  — never a real email while masking is on. Selecting a destination account
-  (`finalizeContinue`) builds the exact argv `cpro session continue`'s own
-  unchanged `RunE` already parses (`[FROM, TO, "--", "--resume", ID]`) and
-  sets it as `m.picked` — `sessionApp` never calls `continueSession`/`s.run`
-  itself, so there is exactly one implementation of the actual migration
-  logic. The `delete` row keeps that same discipline (decisions 0051/0052):
+  — never a real email while masking is on. DESTINATION ACCOUNT offers every
+  registered account, the session's owner included (decision 0063: the user
+  picks, from each row's live Session usage — cpro never guesses), with a
+  `continuingNote` naming the session and its source account below the panel.
+  Selecting one (`finalizeContinue`) builds `["__resume", ID, "--account", TO]`
+  — `cpro --resume`'s own path (`resumeSession`, decision 0032: one-transcript
+  copy when TO isn't the owner, cwd restore, then `s.run`) — and sets it as
+  `m.picked`; `sessionApp` never migrates or runs anything itself. Transcript
+  copies (`continueSession`/`migrateSession`) take the destination's lock
+  *shared* (`sessionCopyLock`), since claude's background helpers inherit
+  `s.run`'s shared lock and outlive the session — an exclusive lock there
+  blocked every move to a busy account (decision 0063, same cause as 0053).
+  Decision 0064 annotates the pickers: rows carry the session's title
+  (`sessionTitle`, session.go — the latest `custom-title`/`ai-title` record
+  read from a bounded tail window, else the first real prompt from the head;
+  loaded asynchronously via `loadSessionTitles`/`sessionTitlesMsg` and part of
+  the search haystack), a `● running` tag on sessions a live Claude process is
+  using (`activeSessionKeys`), and CONTINUE SESSION shows one row per session
+  ID (`dedupeSessions`, newest copy, `also in …` for the rest); DESTINATION
+  ACCOUNT tags signed-out accounts (`fetchSessionAuth`, `destinationLines`)
+  without blocking them. The `delete` row keeps that same discipline (decisions 0051/0052):
   `beginDelete`/`updateDeleteConfirm`/`viewDeleteConfirm` (a new
   `screenDeleteConfirm` frame carrying `pendingDelete []sessionEntry` plus the
   `confirmInput`/`confirmErr` fields `rootPickerApp`'s remove-confirm has) render
@@ -1753,7 +1774,7 @@ Eighteen files (all under `src/`), one package (`main`), each with a distinct re
   `TestPermissionsPreviewTracksCursor` already give: menu navigation
   (Enter/→, including that `list` — a leaf row — doesn't respond to → the way
   `config`'s own non-forward rows like "mask" don't either), the destination
-  picker excluding the session's own owning account, that the *full*
+  picker offering every account, the session's owner included (decision 0063), that the *full*
   (never shortened) session ID lands in the built argv, Esc/← popping a
   nested frame vs. arming/exiting at the stack's own root (both hasParent
   states), search filtering by project name/path/session ID/account, and

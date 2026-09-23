@@ -34,9 +34,9 @@ func projectDirName(cwd string) string {
 // usage limit) can be picked up under another. It only ever adds files: the
 // originals under fromEmail are untouched, and a transcript already present
 // under toEmail (same session ID) is left alone rather than overwritten.
-// Only toEmail is locked (exclusive, matching importSystemAccount's own
-// write path) since fromEmail is only ever read here, the same way
-// exportAccount reads a source account's credentials with no lock at all.
+// Only toEmail is locked (shared — see sessionCopyLock) since fromEmail is
+// only ever read here, the same way exportAccount reads a source account's
+// credentials with no lock at all.
 //
 // sessionID, when non-empty, is an explicit --resume SESSION_ID already
 // forwarded by the caller (decision 0025's interactive session picker always
@@ -82,7 +82,7 @@ func continueSession(s *store, fromEmail, toEmail, sessionID string) (copied int
 		return 0, fmt.Errorf("no Claude session history found for this directory under %s", fromEmail)
 	}
 
-	lock, err := s.accountLock(toEmail, true)
+	lock, err := sessionCopyLock(s, toEmail)
 	if err != nil {
 		return 0, err
 	}
@@ -98,6 +98,9 @@ func continueSession(s *store, fromEmail, toEmail, sessionID string) (copied int
 		if entry.IsDir() || !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
+		if sessionID != "" && name != sessionID+".jsonl" {
+			continue // an explicit session moves alone (decision 0064)
+		}
 		dst := filepath.Join(dstDir, name)
 		if _, err := os.Stat(dst); err == nil {
 			continue // already present under toEmail
@@ -112,6 +115,26 @@ func continueSession(s *store, fromEmail, toEmail, sessionID string) (copied int
 		copied++
 	}
 	return copied, nil
+}
+
+// sessionCopyLock takes the lock continueSession/migrateSession hold while
+// adding a transcript to toEmail's profile. Shared, not exclusive: adding a
+// new <sessionID>.jsonl (atomicWrite, never overwriting) cannot disturb a
+// running claude, so a busy destination — the usual case, since that is the
+// account work is moving to — must not block it (decision 0063; an exclusive
+// lock here once failed whenever claude's background helpers still held the
+// lock it used to inherit, see decision 0064). The shared lock still excludes
+// login/logout/remove while they run. When even that fails, the holder is
+// named, the same diagnostic deleteSessions gives.
+func sessionCopyLock(s *store, email string) (*os.File, error) {
+	lock, err := s.accountLock(email, false)
+	if err == nil {
+		return lock, nil
+	}
+	if holder := lockHolder(s.accountLockPath(email)); holder != "" {
+		return nil, fmt.Errorf("%s: %w — held by %s", displayEmail(email), err, holder)
+	}
+	return nil, fmt.Errorf("%s: %w", displayEmail(email), err)
 }
 
 // findSessionDir locates which project directory under fromEmail's profile
@@ -160,6 +183,151 @@ type sessionEntry struct {
 	dirName   string    // the raw, encoded project directory name (projectDirName's own output)
 	sessionID string    // the transcript's file name without ".jsonl" — Claude's own session ID
 	modTime   time.Time // the transcript file's own mtime, used as "last activity"
+	// title is what the conversation is about (sessionTitle), filled in
+	// asynchronously by the interactive pickers only — listSessions never
+	// reads transcript content, and the CLI list doesn't show it.
+	title string
+}
+
+// dedupeSessions keeps one row per session ID — the first, i.e. the newest,
+// since listSessions sorts newest first, which is also the copy
+// findSessionOwner resumes from — and records which other accounts hold a
+// copy, keyed by the kept row's sessionEntryKey. A session moved between
+// accounts otherwise shows up once per copy in CONTINUE SESSION.
+func dedupeSessions(entries []sessionEntry) (unique []sessionEntry, alsoIn map[string][]string) {
+	alsoIn = map[string][]string{}
+	kept := map[string]int{}
+	for _, e := range entries {
+		if i, ok := kept[e.sessionID]; ok {
+			key := sessionEntryKey(unique[i])
+			alsoIn[key] = append(alsoIn[key], e.email)
+			continue
+		}
+		kept[e.sessionID] = len(unique)
+		unique = append(unique, e)
+	}
+	return unique, alsoIn
+}
+
+// sessionTitleWindow bounds how much of a transcript sessionTitle reads from
+// each end. Transcripts run to tens of megabytes, so reading them whole for
+// every row would stall the picker; measured across real transcripts, Claude
+// Code's latest title record always sat within the last ~40KB.
+const sessionTitleWindow = 64 << 10
+
+// sessionTitle best-effort names a recorded conversation from its own
+// transcript: the latest title Claude Code recorded (a /rename "custom-title"
+// wins over its generated "ai-title"; an older "summary" record counts too),
+// read from the transcript's tail, falling back to the first real prompt
+// typed, from its head. Returns "" when neither is found — the row simply
+// shows no title. Never an error: this is display text only.
+func sessionTitle(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	size := info.Size()
+	read := func(off, n int64) []byte {
+		buf := make([]byte, n)
+		got, _ := f.ReadAt(buf, off)
+		return buf[:got]
+	}
+	var head, tail []byte
+	if size <= 2*sessionTitleWindow {
+		head = read(0, size)
+		tail = head
+	} else {
+		head = read(0, sessionTitleWindow)
+		tail = read(size-sessionTitleWindow, sessionTitleWindow)
+		if i := bytes.IndexByte(tail, '\n'); i >= 0 {
+			tail = tail[i+1:] // drop the partial first line
+		}
+	}
+	if t := latestRecordedTitle(tail); t != "" {
+		return t
+	}
+	if t := latestRecordedTitle(head); t != "" {
+		return t
+	}
+	return firstPrompt(head)
+}
+
+// latestRecordedTitle scans transcript lines for Claude Code's own title
+// records, preferring a user-set custom title over a generated one, and the
+// last of each kind over earlier ones (Claude rewrites them as a
+// conversation evolves).
+func latestRecordedTitle(data []byte) string {
+	var custom, generated string
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if !bytes.Contains(line, []byte(`title"`)) && !bytes.Contains(line, []byte(`"summary"`)) {
+			continue // cheap filter: never unmarshal a large message line
+		}
+		var rec struct {
+			Type        string `json:"type"`
+			CustomTitle string `json:"customTitle"`
+			AITitle     string `json:"aiTitle"`
+			Summary     string `json:"summary"`
+		}
+		if json.Unmarshal(line, &rec) != nil {
+			continue
+		}
+		switch rec.Type {
+		case "custom-title":
+			if rec.CustomTitle != "" {
+				custom = rec.CustomTitle
+			}
+		case "ai-title":
+			if rec.AITitle != "" {
+				generated = rec.AITitle
+			}
+		case "summary":
+			if rec.Summary != "" {
+				generated = rec.Summary
+			}
+		}
+	}
+	if custom != "" {
+		return oneLine(custom)
+	}
+	return oneLine(generated)
+}
+
+// firstPrompt returns the first prompt the user actually typed: a user
+// message whose content is plain text, skipping Claude Code's own meta
+// messages and injected <command-…>/<local-command-…> wrappers.
+func firstPrompt(data []byte) string {
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if !bytes.Contains(line, []byte(`"type":"user"`)) {
+			continue
+		}
+		var rec struct {
+			IsMeta  bool `json:"isMeta"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &rec) != nil || rec.IsMeta {
+			continue
+		}
+		var text string
+		if json.Unmarshal(rec.Message.Content, &text) != nil {
+			continue // a tool result or other structured content, not a prompt
+		}
+		if text = oneLine(text); text != "" && !strings.HasPrefix(text, "<") {
+			return text
+		}
+	}
+	return ""
+}
+
+// oneLine collapses all whitespace runs, newlines included, to single spaces.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // listSessions enumerates every recorded session across every registered
@@ -322,11 +490,11 @@ func resolveSessions(s *store, c config, args []string, defaultAccount string) (
 // once around all of its removals, rather than once per file: a bulk delete of
 // twenty sessions under one account should not open and close the same flock
 // twenty times. Shared, not exclusive, is the whole point (decision 0053): a
-// live Claude session inherits its account's shared lock and holds it for its
-// entire life (store.run deliberately clears FD_CLOEXEC before exec'ing claude),
-// so an exclusive lock would make "one session is open under this account" fail
+// live Claude session used to inherit its account's shared lock for its entire
+// life, so an exclusive lock made "one session is open under this account" fail
 // every delete of that account — including the idle sessions that have nothing
-// to do with it. Deleting one transcript only ever touches cpro's own
+// to do with it. (Decision 0064 stopped that inheritance; shared stays right,
+// since deleting one transcript never needs the whole profile to itself.) Deleting one transcript only ever touches cpro's own
 // per-session file, so it does not collide with the profile-wide operations
 // (login/logout/remove) exclusive locks actually serialize; those still block
 // it, because a shared lock waits on an exclusive one. An account whose
@@ -755,7 +923,7 @@ func migrateSession(s *store, fromEmail, toEmail, dirName, sessionID string) err
 		return fmt.Errorf("could not read session %s under %s: %w", sessionID, fromEmail, err)
 	}
 
-	lock, err := s.accountLock(toEmail, true)
+	lock, err := sessionCopyLock(s, toEmail)
 	if err != nil {
 		return err
 	}
@@ -864,7 +1032,7 @@ func newSessionCommand() *cobra.Command {
 	}
 	session.AddCommand(&cobra.Command{
 		Use:                "continue [FROM_EMAIL TO_EMAIL] [--] [CLAUDE ARGUMENTS...]",
-		Short:              "Copy this directory's Claude session history to another account and resume it",
+		Short:              "Move a Claude session to another account and resume it",
 		DisableFlagParsing: true,
 		Long: "Copy every Claude session transcript recorded for the current directory from " +
 			"FROM_EMAIL's cpro profile into TO_EMAIL's (adding only; nothing is deleted or " +
@@ -874,9 +1042,9 @@ func newSessionCommand() *cobra.Command {
 			"different account without guessing a session ID by hand.\n" +
 			"Any arguments after FROM_EMAIL and TO_EMAIL (optionally after a --) are forwarded " +
 			"to Claude alongside --resume, e.g. --dangerously-skip-permissions. If the forwarded " +
-			"arguments already include --resume (e.g. --resume SESSION_ID to jump straight to a " +
-			"known conversation instead of picking from Claude's list), that one is used instead " +
-			"of a second, bare --resume.\n" +
+			"arguments already include --resume SESSION_ID, only that one session is copied (from " +
+			"whichever directory it was recorded in) and Claude is started in that directory, " +
+			"resuming it directly instead of showing its own list.\n" +
 			"Called with no arguments at all (from a terminal), this opens an interactive picker " +
 			"instead (decision 0025): pick a recorded session, then a destination account, and " +
 			"the exact same copy-and-resume flow above runs with --resume SESSION_ID already " +
@@ -932,6 +1100,14 @@ func newSessionCommand() *cobra.Command {
 				return err
 			}
 			cmd.Println(accent(cmd.OutOrStdout(), fmt.Sprintf("Copied %d session file(s) to %s", copied, to), accentMode))
+			// A named session resumes from the directory it was recorded in,
+			// exactly as `cpro --resume` does — Claude looks a session up
+			// by the working directory it is started from.
+			if id := resumeSessionIDArg(extra); id != "" {
+				if dirName, err := findSessionDir(s, from, id); err == nil {
+					restoreSessionDirectory(s, from, dirName, id)
+				}
+			}
 			forwarded := extra
 			if !hasArg(extra, "--resume") {
 				forwarded = append([]string{"--resume"}, extra...)
